@@ -10,6 +10,7 @@ import smtplib
 import subprocess
 import time
 import sys
+import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
@@ -190,6 +191,18 @@ def send_mail(subject, body):
         log.exception("email failed")
 
 
+def ping_healthcheck(ok):
+    """Dead-man's switch (e.g. healthchecks.io): the monitor alerts when pings stop."""
+    url = os.environ.get("HEALTHCHECK_URL")
+    if not url:
+        return
+    try:
+        urllib.request.urlopen(url if ok else url.rstrip("/") + "/fail", timeout=10)
+        log.info("healthcheck pinged (%s)", "ok" if ok else "fail")
+    except Exception:
+        log.warning("healthcheck ping failed", exc_info=True)
+
+
 def main():
     stamp = f"{datetime.now():%Y-%m-%d}"
     audio, digest = OUT / f"{stamp}.m4a", OUT / "digest.md"
@@ -202,10 +215,12 @@ def main():
         write_feed()
         send_mail(f"Briefing {stamp}", f"{points}\n\n{CFG['feed']['base_url']}/{audio.name}")
         log.info("=== run ok ===")
+        ping_healthcheck(ok=True)
     except Exception as ex:
         log.exception("=== run FAILED ===")
         send_mail(f"Briefing {stamp} FAILED", f"{type(ex).__name__}: {ex}\n\n"
                   f"Full log: {OUT / 'briefing.log'}")
+        ping_healthcheck(ok=False)
         sys.exit(1)
 
 

@@ -8,6 +8,7 @@ services:
       - SMTP_PASSWORD=${SMTP_PASSWORD}
       - SYSLOG_HOST=${SYSLOG_HOST:-}   # optional: mirror logs to a syslog server
       - SYSLOG_TAG=${SYSLOG_TAG:-briefing}
+      - HEALTHCHECK_URL=${HEALTHCHECK_URL:-}   # optional: dead-man's switch ping
     volumes:
       # Adjust to wherever this repo and the output dir live on your host.
       - /volume1/docker/briefing/auth:/root/.notebooklm

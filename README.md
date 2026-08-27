@@ -52,6 +52,7 @@ to `docker-compose.yml` (gitignored):
 | `TZ`            | no       | Container timezone (default `UTC`)               |
 | `SYSLOG_HOST`   | no       | Mirror logs to this syslog server (UDP 514)      |
 | `SYSLOG_TAG`    | no       | Syslog line tag (default `briefing`)             |
+| `HEALTHCHECK_URL` | no     | Ping URL (e.g. [healthchecks.io](https://healthchecks.io)) hit after each run — `/fail` appended on failure. The monitor alerts you when pings stop arriving, catching a dead scheduler that would otherwise fail silently. |
 
 \* without it the run still works, it just skips the email.
 
