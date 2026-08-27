@@ -134,8 +134,11 @@ daily:
 docker compose -f /path/to/docker-compose.yml run --rm briefing
 ```
 
-Check `briefing.log` in the output dir (or `docker logs briefing`) if an
-episode doesn't show up — failures also trigger the email with the error.
+`run --rm` builds a throwaway container from the current image each time, so it
+always picks up the latest `deploy.sh` rebuild. There is no long-lived
+container to inspect afterwards — `briefing.log` in the output dir is the
+record, along with the scheduler's own captured output and, if `SYSLOG_HOST` is
+set, your syslog server. Failures also trigger the email with the error.
 
 ## Not repeating yourself
 

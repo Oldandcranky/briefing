@@ -1,8 +1,10 @@
 services:
   briefing:
     build: .
-    container_name: briefing
     restart: "no"          # started on a schedule, not kept running
+    # No container_name on purpose: this is only ever invoked as
+    # `compose run --rm`, which names containers itself. A fixed name just
+    # leaves a stopped container lying around, pinned to a stale image.
     environment:
       - TZ=${TZ:-UTC}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
