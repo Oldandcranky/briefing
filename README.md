@@ -6,13 +6,20 @@ and publishes the result as a podcast feed plus an email digest.
 
 Each run:
 
-1. Builds a markdown digest from the configured RSS feeds.
-2. Creates a fresh NotebookLM notebook, uploads the digest, and generates an
-   audio overview (the notebook is deleted afterwards, even on failure).
-3. Downloads the episode and asks NotebookLM for six bullet-point show notes.
-4. Prunes old episodes and rewrites `feed.xml` (RSS with iTunes duration tags),
+1. Pulls the configured RSS feeds and folds near-duplicate headlines together,
+   so a story three outlets ran gets covered once — and is treated as one of
+   the day's big ones.
+2. Fetches the full article text for the top stories (not just the RSS blurb)
+   so the hosts have something to actually talk about.
+3. Builds a markdown digest, keeping yesterday's alongside it as a second
+   source so the episode leads with what has *changed*.
+4. Creates a fresh NotebookLM notebook, uploads both, and generates an audio
+   overview (the notebook is deleted afterwards, even on failure).
+5. Downloads the episode, asks NotebookLM for six bullet-point show notes and
+   a headline title naming the day's biggest stories.
+6. Prunes old episodes and rewrites `feed.xml` (RSS with iTunes duration tags),
    ready to be served by any static web server.
-5. Emails the bullet points and episode link — or the error, if the run failed.
+7. Emails the bullet points and episode link — or the error, if the run failed.
 
 Designed to run on a schedule in Docker on a Synology NAS, but nothing about it
 is Synology-specific.
@@ -21,7 +28,10 @@ is Synology-specific.
 
 Everything is baked into the image (see `Dockerfile`):
 [`notebooklm-py`](https://pypi.org/project/notebooklm-py/) (the `notebooklm`
-CLI that drives NotebookLM headlessly), `feedparser`, and `PyYAML`.
+CLI that drives NotebookLM headlessly), `feedparser`, `PyYAML`, and
+[`trafilatura`](https://trafilatura.readthedocs.io/) for article extraction.
+Note trafilatura 1.x pulls a `justext`/`lxml.html.clean` combination that
+breaks on modern lxml — stay on 2.x, which the Dockerfile pins.
 
 **NotebookLM auth must be set up separately** — there is no API key; the CLI
 replays a browser session. On a machine with Chrome, log in and mint a master
@@ -38,10 +48,15 @@ live Google session credentials (`auth/` is gitignored here).
 ## Configuration
 
 Copy `config.yaml.example` to `config.yaml` in the output directory (the volume
-mounted at `/data`; override with `BRIEFING_CONFIG`). It sets the feeds, the
-audio prompts/format/length, the podcast title and public `base_url`, how many
-episodes to keep, and the email addresses/SMTP host. It is read at runtime from
-the mounted volume, so edits take effect on the next run without a rebuild.
+mounted at `/data`; override with `BRIEFING_CONFIG`). It sets the feeds, how
+many articles to fetch in full (`full_text.count`, with `workers` kept low for
+modest hardware), the audio prompts/format/length, the podcast title and public
+`base_url`, how many episodes to keep, and the email addresses/SMTP host. It is
+read at runtime from the mounted volume, so edits take effect on the next run
+without a rebuild.
+
+`audio.prompts` is a **list** — one is picked at random each run, which keeps
+the show from opening the same way every morning.
 
 Secrets and host settings come from the environment — put them in `.env` next
 to `docker-compose.yml` (gitignored):
@@ -66,7 +81,8 @@ The compose file mounts two host paths — adjust them to your layout:
 
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
-- the output dir → `/data`: `config.yaml`, episodes (`.m4a`/`.txt`),
+- the output dir → `/data`: `config.yaml`, episodes (`.m4a` plus `.txt` show
+  notes and a `.title` sidecar), `digest.md` and `digest-yesterday.md`,
   `feed.xml`, `briefing.log`
 
 Serve the output dir over HTTPS (e.g. `tailscale serve`, nginx, or the NAS's

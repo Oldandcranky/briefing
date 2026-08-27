@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Daily news briefing: RSS -> NotebookLM audio overview -> podcast feed + email."""
+import concurrent.futures as futures
+import html
 import json
 import logging
 import logging.handlers
@@ -20,10 +22,24 @@ from xml.sax.saxutils import escape
 import feedparser
 import yaml
 
+try:
+    import trafilatura
+except ImportError:
+    trafilatura = None
+
 OUT = Path(os.environ.get("BRIEFING_OUT", "/data"))
 CFG_PATH = Path(os.environ.get("BRIEFING_CONFIG", "/data/config.yaml"))
 CFG = yaml.safe_load(CFG_PATH.read_text())
 UA = "Mozilla/5.0 (compatible; briefing/1.0)"
+
+# Appended to the audio prompt when yesterday's digest is attached as a second source.
+DELTA_NOTE = (" Yesterday's digest is attached as a second source: lead with what is new or "
+              "has moved since then, and don't re-tell stories that haven't changed.")
+
+# Words too common to help decide whether two headlines are the same story.
+STOP = {"the", "a", "an", "of", "to", "in", "for", "on", "and", "as", "at", "by", "with",
+        "from", "after", "over", "into", "its", "is", "are", "was", "were", "be", "has",
+        "have", "will", "says", "say", "said", "new", "amid", "how", "why", "what"}
 
 OUT.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -68,46 +84,149 @@ def clean(answer):
         s = ln.strip()
         if not s:
             continue
-        if not re.match(r"^([-*\u2022]|\d+[.)])\s", s):
+        if not re.match(r"^([-*•]|\d+[.)])\s", s):
             continue
         s = re.sub(r"\s*\[\d+\]", "", s).replace("\\$", "$").replace("**", "")
         lines.append(s)
     return "\n".join(lines)
 
 
-def build_digest(path):
-    lines, count = [], 0
+def plain(s):
+    """Feed summaries arrive as HTML fragments."""
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", s or "")).split())
+
+
+def keywords(title):
+    return {w for w in re.findall(r"[a-z0-9]+", title.lower()) if len(w) > 2 and w not in STOP}
+
+
+def same_story(a, b):
+    """Two headlines about one story share most of their distinctive words."""
+    ka, kb = keywords(a), keywords(b)
+    if not ka or not kb:
+        return False
+    return len(ka & kb) / min(len(ka), len(kb)) >= 0.6
+
+
+def collect_items():
+    """Pull every feed, folding near-duplicate stories into the first feed that ran them."""
+    items = []
     for name, url in CFG["feeds"].items():
         d = feedparser.parse(url, agent=UA)
-        n = len(d.entries)
-        log.info("feed %s: %d entries (http %s)", name, n, d.get("status"))
-        if not n:
-            continue
-        lines.append(f"\n## {name}\n")
+        log.info("feed %s: %d entries (http %s)", name, len(d.entries), d.get("status"))
         for e in d.entries[: CFG["max_per_feed"]]:
-            summary = (e.get("summary") or "").strip().replace("\n", " ")[:400]
-            lines.append(f"- {e.title.strip()}" + (f" — {summary}" if summary else ""))
-            count += 1
-    if count == 0:
+            title = plain(e.get("title"))
+            if not title:
+                continue
+            dup = next((i for i in items if same_story(i["title"], title)), None)
+            if dup:
+                if name not in dup["feeds"]:
+                    dup["feeds"].append(name)
+                continue
+            items.append({"title": title, "feed": name, "feeds": [name],
+                          "link": e.get("link") or "", "summary": plain(e.get("summary")),
+                          "text": ""})
+    if not items:
         raise RuntimeError("no headlines from any feed")
-    path.write_text(f"# News digest {datetime.now():%A %d %B %Y}\n" + "\n".join(lines))
-    log.info("digest: %d headlines, %d bytes", count, path.stat().st_size)
-    return count
+    dupes = sum(len(i["feeds"]) - 1 for i in items)
+    log.info("collected %d stories (%d duplicate headlines folded in)", len(items), dupes)
+    return items
 
 
-def make_episode(digest, audio_path):
+def add_full_text(items):
+    """Fetch article bodies for the top stories so the hosts have more than headlines."""
+    cfg = CFG.get("full_text") or {}
+    count, cap = cfg.get("count", 10), cfg.get("max_chars", 4000)
+    if not count:
+        return
+    if trafilatura is None:
+        log.warning("trafilatura not installed, using feed summaries only")
+        return
+    # Stories several feeds carried are the day's big ones; ties keep feed order.
+    targets = [i for i in sorted(items, key=lambda x: -len(x["feeds"])) if i["link"]][:count]
+
+    def grab(item):
+        try:
+            # favor_precision keeps nav chrome and related-link teasers out of the digest.
+            body = trafilatura.extract(trafilatura.fetch_url(item["link"]),
+                                       include_comments=False, include_tables=False,
+                                       favor_precision=True) or ""
+            return re.sub(r"^\s*[-•]?\s*Published\s*", "", body)
+        except Exception:
+            log.debug("extract failed: %s", item["link"], exc_info=True)
+            return ""
+
+    t0 = datetime.now()
+    with futures.ThreadPoolExecutor(max_workers=cfg.get("workers", 4)) as pool:
+        for item, text in zip(targets, pool.map(grab, targets)):
+            item["text"] = " ".join(text.split())[:cap]
+    log.info("full text: %d/%d articles in %ds", sum(1 for i in targets if i["text"]),
+             len(targets), (datetime.now() - t0).seconds)
+
+
+def build_digest(path, items):
+    lines = [f"# News digest {datetime.now():%A %d %B %Y}"]
+    by_feed = {}
+    for i in items:
+        by_feed.setdefault(i["feed"], []).append(i)
+    for name, group in by_feed.items():
+        lines.append(f"\n## {name}\n")
+        for i in group:
+            also = f" (also covered by {', '.join(i['feeds'][1:])})" if len(i["feeds"]) > 1 else ""
+            body = i["text"] or i["summary"][:400]
+            lines.append(f"### {i['title']}{also}\n")
+            if body:
+                lines.append(f"{body}\n")
+    path.write_text("\n".join(lines))
+    log.info("digest: %d stories, %d bytes", len(items), path.stat().st_size)
+
+
+def rotate_digest(digest, prev):
+    """Keep yesterday's digest so today's episode can lead with what changed."""
+    prev.unlink(missing_ok=True)
+    if not digest.exists():
+        return None
+    if time.time() - digest.stat().st_mtime > 3 * 86400:
+        log.info("previous digest is stale, skipping the delta source")
+        digest.unlink()
+        return None
+    digest.rename(prev)
+    return prev
+
+
+def episode_title(nb, stamp, points):
+    """Headline for the episode; falls back to the first bullet, then to the bare date."""
+    title = ""
+    try:
+        answer = jparse(run("ask", "A title for this episode: at most eight words, naming "
+                            "the biggest stories. No quotes, no preamble.",
+                            "-n", nb, "--json")).get("answer", "")
+        title = next((ln.strip(" \"'*.#") for ln in answer.splitlines() if ln.strip()), "")
+        title = re.sub(r"\s*\[\d+\]", "", title)
+    except Exception:
+        log.warning("title ask failed", exc_info=True)
+    if not title or len(title) > 80:
+        first = re.sub(r"^([-*•]|\d+[.)])\s*", "", points.splitlines()[0] if points else "")
+        title = first if len(first) <= 60 else first[:60].rsplit(" ", 1)[0] + "…"
+    return f"{stamp} · {title}" if title else f"Briefing {stamp}"
+
+
+def make_episode(digest, prev, audio_path, stamp):
     """Fresh notebook per run so there's never a stale audio artifact. Deleted after."""
-    nb = jparse(run("create", f"briefing-{datetime.now():%Y-%m-%d}", "--json"))["notebook"]["id"]
+    nb = jparse(run("create", f"briefing-{stamp}", "--json"))["notebook"]["id"]
     log.info("notebook %s", nb)
     try:
         run("source", "add", str(digest), "-n", nb)
+        if prev:
+            run("source", "add", str(prev), "-n", nb)
         if not jparse(run("metadata", "--json", "-n", nb)).get("sources"):
             raise RuntimeError("source add reported success but notebook has no sources")
 
         a = CFG["audio"]
         t0 = datetime.now()
         log.info("generating audio (format=%s length=%s)", a["format"], a["length"])
-        run("generate", "audio", random.choice(a["prompts"]), "-n", nb, "--format", a["format"],
+        run("generate", "audio", random.choice(a["prompts"]) + (DELTA_NOTE if prev else ""),
+            "-n", nb, "--format", a["format"],
             "--length", a["length"], "--wait", "--timeout", "1500", "--retry", "3")
         log.info("audio generated in %ds", (datetime.now() - t0).seconds)
 
@@ -119,7 +238,8 @@ def make_episode(digest, audio_path):
 
         points = run("ask", "Six bullet points, one line each, covering the most "
                      "important stories. No preamble.", "-n", nb, "--json")
-        return clean(jparse(points).get("answer", ""))
+        points = clean(jparse(points).get("answer", ""))
+        return points, episode_title(nb, stamp, points)
     finally:
         try:
             run("delete", "-n", nb, "--yes")
@@ -130,14 +250,19 @@ def make_episode(digest, audio_path):
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
         f.with_suffix(".txt").unlink(missing_ok=True)
+        f.with_suffix(".title").unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
 
 
 def duration(path):
     """Seconds from the MP4 mvhd atom. Returns 0 if not found."""
-    d = path.read_bytes()
-    i = d.find(b"mvhd")
+    with path.open("rb") as fh:          # usually near the start; avoid slurping the whole file
+        d = fh.read(2_000_000)
+        i = d.find(b"mvhd")
+        if i < 0:
+            d = d + fh.read()
+            i = d.find(b"mvhd")
     if i < 0:
         return 0
     if d[i + 4] == 0:
@@ -153,10 +278,11 @@ def write_feed():
     items = []
     for f in eps:
         when = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
-        notes = f.with_suffix(".txt")
+        notes, titled = f.with_suffix(".txt"), f.with_suffix(".title")
         secs = duration(f)
+        name = titled.read_text().strip() if titled.exists() else f"Briefing {f.stem}"
         items.append(
-            f"<item><title>Briefing {f.stem}</title>"
+            f"<item><title>{escape(name)}</title>"
             f"<itunes:duration>{secs//3600:02d}:{secs//60%60:02d}:{secs%60:02d}</itunes:duration>"
             f"<description>{escape(notes.read_text() if notes.exists() else '')}</description>"
             f"<enclosure url='{base}/{f.name}' length='{f.stat().st_size}' type='audio/mp4'/>"
@@ -208,12 +334,16 @@ def main():
     audio, digest = OUT / f"{stamp}.m4a", OUT / "digest.md"
     log.info("=== run start %s (config %s) ===", stamp, CFG_PATH)
     try:
-        build_digest(digest)
-        points = make_episode(digest, audio)
+        prev = rotate_digest(digest, OUT / "digest-yesterday.md")
+        items = collect_items()
+        add_full_text(items)
+        build_digest(digest, items)
+        points, title = make_episode(digest, prev, audio, stamp)
         (OUT / f"{stamp}.txt").write_text(points)
+        (OUT / f"{stamp}.title").write_text(title)
         prune()
         write_feed()
-        send_mail(f"Briefing {stamp}", f"{points}\n\n{CFG['feed']['base_url']}/{audio.name}")
+        send_mail(title, f"{points}\n\n{CFG['feed']['base_url']}/{audio.name}")
         log.info("=== run ok ===")
         ping_healthcheck(ok=True)
     except Exception as ex:

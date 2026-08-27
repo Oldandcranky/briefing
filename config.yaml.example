@@ -8,6 +8,13 @@ feeds:
 
 max_per_feed: 8
 
+# Near-duplicate headlines across feeds are folded together automatically, and the
+# stories the most feeds carried are the ones fetched in full below.
+full_text:
+  count: 10          # articles to fetch in full (0 disables; feed summaries are the fallback)
+  max_chars: 4000    # per article
+  workers: 4         # parallel fetches — keep low on a NAS
+
 audio:
   prompts:               # one is picked at random each run
     - "Two hosts, brisk news briefing, no filler. Lead with what changed today."
