@@ -147,6 +147,14 @@ def canonical_url(url):
     return f"{host}{(p.path or '').rstrip('/')}".lower()
 
 
+def safe_link(url):
+    """Feed contents are untrusted: only ever emit http(s) hrefs into the page."""
+    try:
+        return url if urlsplit(url).scheme in ("http", "https") else ""
+    except ValueError:
+        return ""
+
+
 def item_key(item):
     """Stable identity: the canonical URL when there is one, else the flattened title."""
     u = canonical_url(item.get("link", ""))
@@ -374,8 +382,8 @@ def make_episode(digest, prev, audio_path, stamp):
 
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
-        f.with_suffix(".txt").unlink(missing_ok=True)
-        f.with_suffix(".title").unlink(missing_ok=True)
+        for ext in (".txt", ".title", ".sources"):
+            f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
 
@@ -401,9 +409,15 @@ def episodes():
     """Newest first, capped at keep_episodes — the shared source for feed.xml and index.html."""
     out = []
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
-        notes, titled = f.with_suffix(".txt"), f.with_suffix(".title")
+        notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
         secs = duration(f)
+        try:
+            sources = json.loads(srcs.read_text()) if srcs.exists() else []
+        except json.JSONDecodeError:
+            log.warning("unreadable sources sidecar: %s", srcs.name)
+            sources = []
         out.append({
+            "sources": sources,
             "file": f, "size": f.stat().st_size, "secs": secs,
             "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
             # RSS wants UTC; the page should show the day the episode is named for.
@@ -433,6 +447,28 @@ def write_feed(eps):
     log.info("feed: %d episodes", len(eps))
 
 
+def sources_block(sources, esc):
+    """Every story that went into the episode, collapsed so it doesn't bury the notes."""
+    if not sources:
+        return ""
+    by_feed = {}
+    for s in sources:
+        by_feed.setdefault(s.get("feed", "Other"), []).append(s)
+    groups = []
+    for feed, group in by_feed.items():
+        rows = []
+        for s in group:
+            title, href = esc(s.get("title", "")), safe_link(s.get("link", ""))
+            also = [f for f in s.get("feeds", [])[1:]]
+            tag = f" <span class=also>also in {esc(', '.join(also))}</span>" if also else ""
+            rows.append(f"<li><a href='{esc(href)}' target=_blank rel='noopener noreferrer'>"
+                        f"{title}</a>{tag}</li>" if href else f"<li>{title}{tag}</li>")
+        groups.append(f"<h3>{esc(feed)}</h3><ul class=src>{''.join(rows)}</ul>")
+    plural = "" if len(by_feed) == 1 else "s"
+    return (f"<details><summary>{len(sources)} stories from "
+            f"{len(by_feed)} feed{plural}</summary>{''.join(groups)}</details>")
+
+
 def write_index(eps):
     """A plain listening page served alongside feed.xml. No assets, no external requests."""
     esc = html.escape
@@ -447,6 +483,7 @@ def write_index(eps):
             f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']} · {size}</p>"
             f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
             + (f"<ul>{points}</ul>" if points else "")
+            + sources_block(e["sources"], esc)
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
     (OUT / "index.html").write_text(f"""<!doctype html>
 <html lang=en><meta charset=utf-8>
@@ -475,6 +512,16 @@ ul {{ margin:1rem 0 0; padding-left:1.15rem; }}
 li {{ margin:.3rem 0; }}
 .dl {{ margin:.9rem 0 0; font-size:.82rem; }}
 .dl a {{ color:var(--dim); }}
+details {{ margin-top:1rem; border-top:1px solid var(--line); padding-top:.85rem; }}
+summary {{ cursor:pointer; color:var(--dim); font-size:.82rem; }}
+summary:hover {{ color:var(--fg); }}
+details h3 {{ font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--dim); margin:1rem 0 .4rem; font-weight:600; }}
+ul.src {{ margin:0; padding-left:1.15rem; font-size:.9rem; }}
+ul.src li {{ margin:.25rem 0; }}
+ul.src a {{ text-decoration:none; }}
+ul.src a:hover {{ text-decoration:underline; }}
+.also {{ color:var(--dim); font-size:.8rem; }}
 </style>
 <header>
 <h1>{esc(CFG['feed']['title'])}</h1>
@@ -537,6 +584,9 @@ def main():
         points, title = make_episode(digest, prev, audio, stamp)
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
+        (OUT / f"{stamp}.sources").write_text(json.dumps(
+            [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
+             for i in items]))
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()

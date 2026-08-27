@@ -305,7 +305,49 @@ check("episode anchors", "id='2026-08-26'" in page)
 check("email links to the page, not the audio",
       b.episode_link("2026-08-26") == "https://example.com/briefing/#2026-08-26",
       b.episode_link("2026-08-26"))
-check("no external requests", not re.search(r"(src|href)=['\"]https?://", page))
+# Story links are external by design; assets must never be, or the page breaks
+# offline and leaks a request to whoever hosts them.
+check("no remote assets", not re.search(r"<(img|script|iframe)[^>]+src=['\"]?https?://", page)
+      and not re.search(r"<link[^>]+href=['\"]?https?://", page))
+check("audio stays relative", "src='2026-08-26.m4a'" in page)
+
+section("source links")
+b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
+stub_feeds({A: [entry("Alpha lead story", "https://a.example/lead"),
+                entry("Alpha second story", "https://a.example/second")],
+            B: [entry("Beta exclusive", "https://b.example/x")]})
+src_items = b.collect_items()
+(OUT / "2026-08-26.sources").write_text(json.dumps(
+    [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
+     for i in src_items]))
+eps = b.episodes()
+b.write_index(eps)
+page = (OUT / "index.html").read_text()
+check("sources are collapsed by default", "<details>" in page and " open>" not in page)
+check("summary counts stories and feeds", "3 stories from 2 feeds" in page,
+      re.search(r"<summary>([^<]*)</summary>", page).group(1) if "<summary>" in page else "none")
+check("story links rendered", "href='https://a.example/lead'" in page)
+check("links open safely", page.count("rel='noopener noreferrer'") == 3)
+check("grouped by feed", "<h3>Alpha News</h3>" in page and "<h3>Beta Wire</h3>" in page)
+check("episodes without a sidecar omit the block", page.count("<details>") == 1,
+      f"{page.count('<details>')} details blocks")
+
+section("untrusted feed input")
+check("javascript url rejected", b.safe_link("javascript:alert(1)") == "")
+check("data url rejected", b.safe_link("data:text/html,<script>") == "")
+check("http and https allowed",
+      b.safe_link("http://x.example/a") and b.safe_link("https://x.example/a"))
+check("blank url safe to render", b.safe_link("") == "")
+hostile = [{"title": "<img src=x onerror=alert(1)>", "feed": "Evil & Co",
+            "feeds": ["Evil & Co"], "link": "javascript:alert(1)"}]
+blk = b.sources_block(hostile, __import__("html").escape)
+check("hostile title escaped", "<img src=x" not in blk and "&lt;img" in blk)
+check("hostile url not linked", "javascript:" not in blk and "<a " not in blk)
+check("feed name escaped", "Evil &amp; Co" in blk)
+check("multi-feed stories noted",
+      "also in" in b.sources_block(
+          [{"title": "T", "feed": "A", "feeds": ["A", "B"], "link": "https://x.example/a"}],
+          __import__("html").escape))
 check("tags balanced",
       all(page.count(f"<{t}") == page.count(f"</{t}>") for t in ("article", "ul", "li", "h2")))
 

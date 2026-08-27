@@ -20,10 +20,11 @@ Each run:
 5. Downloads the episode, asks NotebookLM for six bullet-point show notes and
    a headline title naming the day's biggest stories.
 6. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
-   tags) and `index.html` — a small listening page with an audio player and
-   show notes per episode, so the output dir is browsable as well as
-   subscribable. Both are plain files for any static web server; the page
-   pulls in no external assets.
+   tags) and `index.html` — a listening page with a player, show notes, and a
+   collapsed list of every source story linked back to the original article,
+   grouped by outlet. Both are plain files for any static web server; the page
+   loads no external assets, and story links are escaped and restricted to
+   http(s), since feed contents are untrusted.
 7. Emails the bullet points and episode link — or the error, if the run failed.
 
 Designed to run on a schedule in Docker on a Synology NAS, but nothing about it
@@ -87,8 +88,9 @@ The compose file mounts two host paths — adjust them to your layout:
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
 - the output dir → `/data`: `config.yaml`, episodes (`.m4a` plus `.txt` show
-  notes and a `.title` sidecar), `digest.md` and `digest-yesterday.md`,
-  `feed.xml`, `index.html`, `briefing.log`
+  notes, `.title` and `.sources` sidecars), `digest.md`,
+  `digest-yesterday.md`, `aired.jsonl`, `feed.xml`, `index.html`,
+  `briefing.log`
 
 Serve the output dir over HTTPS (e.g. `tailscale serve`, nginx, or the NAS's
 web station) at `feed.base_url`. Point your podcast app at
