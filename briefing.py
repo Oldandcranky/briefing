@@ -51,9 +51,16 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(OUT / "briefing.log")])
 log = logging.getLogger("briefing")
 
+# trafilatura logs every scored DOM node at DEBUG, which buries our own lines
+# hundreds to one. Nothing below WARNING from the libraries is worth keeping.
+for _noisy in ("trafilatura", "urllib3", "charset_normalizer", "httpx", "httpcore",
+               "htmldate", "courlan", "justext"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 # Optional: mirror logs to a syslog server (e.g. the NAS's log center).
 if os.environ.get("SYSLOG_HOST"):
     _h = logging.handlers.SysLogHandler(address=(os.environ["SYSLOG_HOST"], 514))
+    _h.setLevel(logging.INFO)   # the log centre wants milestones, not cli stdout dumps
     _h.setFormatter(logging.Formatter(
         f"%(asctime)s {os.environ.get('SYSLOG_TAG', 'briefing')}: %(message)s",
         datefmt="%b %d %H:%M:%S"))
