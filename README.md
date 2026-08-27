@@ -17,8 +17,11 @@ Each run:
    overview (the notebook is deleted afterwards, even on failure).
 5. Downloads the episode, asks NotebookLM for six bullet-point show notes and
    a headline title naming the day's biggest stories.
-6. Prunes old episodes and rewrites `feed.xml` (RSS with iTunes duration tags),
-   ready to be served by any static web server.
+6. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
+   tags) and `index.html` — a small listening page with an audio player and
+   show notes per episode, so the output dir is browsable as well as
+   subscribable. Both are plain files for any static web server; the page
+   pulls in no external assets.
 7. Emails the bullet points and episode link — or the error, if the run failed.
 
 Designed to run on a schedule in Docker on a Synology NAS, but nothing about it
@@ -83,11 +86,11 @@ The compose file mounts two host paths — adjust them to your layout:
   baked-in copy so script edits don't need a rebuild)
 - the output dir → `/data`: `config.yaml`, episodes (`.m4a` plus `.txt` show
   notes and a `.title` sidecar), `digest.md` and `digest-yesterday.md`,
-  `feed.xml`, `briefing.log`
+  `feed.xml`, `index.html`, `briefing.log`
 
 Serve the output dir over HTTPS (e.g. `tailscale serve`, nginx, or the NAS's
-web station) at `feed.base_url`, and point your podcast app at
-`<base_url>/feed.xml`.
+web station) at `feed.base_url`. Point your podcast app at
+`<base_url>/feed.xml`, or just open `<base_url>/` to listen in a browser.
 
 ## Scheduling
 

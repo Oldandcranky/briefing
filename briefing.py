@@ -111,10 +111,10 @@ def same_story(a, b):
 def collect_items():
     """Pull every feed, folding near-duplicate stories into the first feed that ran them."""
     items = []
-    for name, url in CFG["feeds"].items():
+    for fidx, (name, url) in enumerate(CFG["feeds"].items()):
         d = feedparser.parse(url, agent=UA)
         log.info("feed %s: %d entries (http %s)", name, len(d.entries), d.get("status"))
-        for e in d.entries[: CFG["max_per_feed"]]:
+        for pos, e in enumerate(d.entries[: CFG["max_per_feed"]]):
             title = plain(e.get("title"))
             if not title:
                 continue
@@ -125,7 +125,7 @@ def collect_items():
                 continue
             items.append({"title": title, "feed": name, "feeds": [name],
                           "link": e.get("link") or "", "summary": plain(e.get("summary")),
-                          "text": ""})
+                          "text": "", "pos": pos, "fidx": fidx})
     if not items:
         raise RuntimeError("no headlines from any feed")
     dupes = sum(len(i["feeds"]) - 1 for i in items)
@@ -142,8 +142,10 @@ def add_full_text(items):
     if trafilatura is None:
         log.warning("trafilatura not installed, using feed summaries only")
         return
-    # Stories several feeds carried are the day's big ones; ties keep feed order.
-    targets = [i for i in sorted(items, key=lambda x: -len(x["feeds"])) if i["link"]][:count]
+    # Stories several feeds carried are the day's big ones. Otherwise take each feed's
+    # lead story before any feed's second, so one chatty feed can't eat the whole budget.
+    ranked = sorted(items, key=lambda x: (-len(x["feeds"]), x["pos"], x["fidx"]))
+    targets = [i for i in ranked if i["link"]][:count]
 
     def grab(item):
         try:
@@ -272,22 +274,32 @@ def duration(path):
     return dur // scale if scale else 0
 
 
-def write_feed():
-    eps = sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]
-    base = CFG["feed"]["base_url"].rstrip("/")
-    items = []
-    for f in eps:
-        when = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
+def episodes():
+    """Newest first, capped at keep_episodes — the shared source for feed.xml and index.html."""
+    out = []
+    for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
         notes, titled = f.with_suffix(".txt"), f.with_suffix(".title")
         secs = duration(f)
-        name = titled.read_text().strip() if titled.exists() else f"Briefing {f.stem}"
-        items.append(
-            f"<item><title>{escape(name)}</title>"
-            f"<itunes:duration>{secs//3600:02d}:{secs//60%60:02d}:{secs%60:02d}</itunes:duration>"
-            f"<description>{escape(notes.read_text() if notes.exists() else '')}</description>"
-            f"<enclosure url='{base}/{f.name}' length='{f.stat().st_size}' type='audio/mp4'/>"
-            f"<guid isPermaLink='false'>{f.stem}</guid>"
-            f"<pubDate>{format_datetime(when)}</pubDate></item>")
+        out.append({
+            "file": f, "size": f.stat().st_size, "secs": secs,
+            "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
+            # RSS wants UTC; the page should show the day the episode is named for.
+            "local": datetime.fromtimestamp(f.stat().st_mtime),
+            "title": titled.read_text().strip() if titled.exists() else f"Briefing {f.stem}",
+            "notes": notes.read_text().strip() if notes.exists() else "",
+            "clock": f"{secs//3600:02d}:{secs//60%60:02d}:{secs%60:02d}"})
+    return out
+
+
+def write_feed(eps):
+    base = CFG["feed"]["base_url"].rstrip("/")
+    items = [
+        f"<item><title>{escape(e['title'])}</title>"
+        f"<itunes:duration>{e['clock']}</itunes:duration>"
+        f"<description>{escape(e['notes'])}</description>"
+        f"<enclosure url='{base}/{e['file'].name}' length='{e['size']}' type='audio/mp4'/>"
+        f"<guid isPermaLink='false'>{e['file'].stem}</guid>"
+        f"<pubDate>{format_datetime(e['when'])}</pubDate></item>" for e in eps]
     title = escape(CFG["feed"]["title"])
     (OUT / "feed.xml").write_text(
         "<?xml version='1.0' encoding='UTF-8'?>"
@@ -296,6 +308,60 @@ def write_feed():
         f"<description>{title}</description><language>en-us</language>"
         f"{''.join(items)}</channel></rss>")
     log.info("feed: %d episodes", len(eps))
+
+
+def write_index(eps):
+    """A plain listening page served alongside feed.xml. No assets, no external requests."""
+    esc = html.escape
+    cards = []
+    for n, e in enumerate(eps):
+        points = "".join(f"<li>{esc(re.sub(r'^([-*•]|\d+[.)])\s*', '', ln))}</li>"
+                         for ln in e["notes"].splitlines() if ln.strip())
+        size = (f"{e['size'] / 1e6:.0f} MB" if e["size"] >= 1e6 else f"{e['size'] / 1e3:.0f} KB")
+        cards.append(
+            "<article>"
+            f"<h2>{esc(e['title'])}</h2>"
+            f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']} · {size}</p>"
+            f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
+            + (f"<ul>{points}</ul>" if points else "")
+            + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
+    (OUT / "index.html").write_text(f"""<!doctype html>
+<html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>{esc(CFG['feed']['title'])}</title>
+<style>
+:root {{ color-scheme: light dark; --bg:#fbfaf8; --fg:#1c1b19; --dim:#6b6862;
+        --card:#fff; --line:#e6e2db; --accent:#8a5a2b; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ --bg:#161513; --fg:#eceae6; --dim:#9a958c; --card:#1f1e1b;
+           --line:#302e2a; --accent:#d9a45b; }} }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0 auto; padding:2.5rem 1.25rem 4rem; max-width:44rem; background:var(--bg);
+       color:var(--fg); font:16px/1.6 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; }}
+header {{ border-bottom:1px solid var(--line); padding-bottom:1.25rem; margin-bottom:2rem; }}
+h1 {{ font-size:1.6rem; margin:0 0 .35rem; letter-spacing:-.01em; }}
+header p {{ margin:0; color:var(--dim); font-size:.9rem; }}
+a {{ color:var(--accent); }}
+article {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:1.25rem 1.35rem; margin-bottom:1.1rem; }}
+h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
+.meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
+audio {{ width:100%; height:38px; }}
+ul {{ margin:1rem 0 0; padding-left:1.15rem; }}
+li {{ margin:.3rem 0; }}
+.dl {{ margin:.9rem 0 0; font-size:.82rem; }}
+.dl a {{ color:var(--dim); }}
+</style>
+<header>
+<h1>{esc(CFG['feed']['title'])}</h1>
+<p>{len(eps)} episode{'s' if len(eps) != 1 else ''} ·
+<a href="feed.xml">Subscribe via RSS</a> — paste this page's URL + <code>/feed.xml</code>
+into any podcast app.</p>
+</header>
+{''.join(cards) or '<p>No episodes yet.</p>'}
+</html>
+""")
+    log.info("index: %d episodes", len(eps))
 
 
 def send_mail(subject, body):
@@ -342,7 +408,9 @@ def main():
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
         prune()
-        write_feed()
+        eps = episodes()
+        write_feed(eps)
+        write_index(eps)
         send_mail(title, f"{points}\n\n{CFG['feed']['base_url']}/{audio.name}")
         log.info("=== run ok ===")
         ping_healthcheck(ok=True)
