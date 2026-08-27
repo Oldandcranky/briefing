@@ -21,9 +21,12 @@ ledger_days: 7
 # Near-duplicate headlines across feeds are folded together automatically, and the
 # stories the most feeds carried are the ones fetched in full below.
 full_text:
-  count: 10          # articles to fetch in full (0 disables; feed summaries are the fallback)
+  count: 10          # articles wanted in full (0 disables; feed summaries are the fallback)
   max_chars: 4000    # per article
   workers: 4         # parallel fetches — keep low on a NAS
+  max_attempts: 20   # some pages never yield an article (a Reddit comment thread has no
+                     # body to extract), so keep reaching down the ranking to reach `count`
+                     # — but stop here. Defaults to count x 2.
 
 audio:
   prompts:               # one is picked at random each run

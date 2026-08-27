@@ -227,6 +227,48 @@ check("follow-up on a new url survives", len(b.collect_items(b.recent_keys(led, 
 b.commit_aired(led, [{"key": "url:x", "title": "T"}], today, 7)
 check("ledger stays bounded", len(led.read_text().strip().splitlines()) <= 3)
 
+section("full-text backfill")
+class FakeTraf:
+    """Stands in for trafilatura: anything on a listed host extracts to nothing."""
+    __version__ = "fake"
+    def __init__(self, barren): self.barren = barren; self.fetched = []
+    def fetch_url(self, url): self.fetched.append(url); return url
+    def extract(self, downloaded, **kw):
+        return "" if any(h in downloaded for h in self.barren) else "article body " * 60
+
+real_traf = b.trafilatura
+b.CFG["feeds"] = {"Alpha News": A}
+b.CFG["max_per_feed"] = 6
+b.CFG["full_text"] = {"count": 3, "max_chars": 4000, "workers": 2}
+stub_feeds({A: [entry("Story one",   "https://news.example/1"),
+                entry("Reddit one",  "https://reddit.example/r/x/comments/1"),
+                entry("Story two",   "https://news.example/2"),
+                entry("Reddit two",  "https://reddit.example/r/x/comments/2"),
+                entry("Story three", "https://news.example/3"),
+                entry("Story four",  "https://news.example/4")]})
+ft = b.collect_items()
+b.trafilatura = FakeTraf(["reddit.example"])
+b.add_full_text(ft)
+have = [i["title"] for i in ft if i["text"]]
+check("reaches the requested count despite failures", len(have) == 3, f"got {len(have)}: {have}")
+check("skips past the barren pages",
+      all("Reddit" not in t for t in have), f"{have}")
+check("backfills from further down the ranking", "Story three" in have, f"{have}")
+check("stops once the count is met", "Story four" not in have)
+check("failed pages were actually attempted",
+      sum(1 for u in b.trafilatura.fetched if "reddit" in u) == 2,
+      f"{b.trafilatura.fetched}")
+
+# A day where nothing extracts must stop at the budget, not spin through every story.
+b.trafilatura = FakeTraf(["example"])
+ft2 = b.collect_items()
+b.add_full_text(ft2)
+check("bounded when everything fails",
+      len(b.trafilatura.fetched) <= 6 and not any(i["text"] for i in ft2),
+      f"{len(b.trafilatura.fetched)} attempts")
+b.trafilatura = real_traf
+b.CFG["max_per_feed"] = 3
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],

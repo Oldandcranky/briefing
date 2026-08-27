@@ -297,7 +297,10 @@ def add_full_text(items):
     # Stories several feeds carried are the day's big ones. Otherwise take each feed's
     # lead story before any feed's second, so one chatty feed can't eat the whole budget.
     ranked = sorted(items, key=lambda x: (-len(x["feeds"]), x["pos"], x["fidx"]))
-    targets = [i for i in ranked if i["link"]][:count]
+    queue = [i for i in ranked if i["link"]]
+    # Some pages never yield an article — a Reddit comment thread has no body to extract.
+    # Rather than ending up short, keep reaching down the ranking, but bounded.
+    budget = cfg.get("max_attempts", count * 2)
 
     def grab(item):
         try:
@@ -310,14 +313,20 @@ def add_full_text(items):
             log.debug("extract failed: %s", item["link"], exc_info=True)
             return ""
 
-    t0 = datetime.now()
+    t0, got, attempts = datetime.now(), 0, 0
     with futures.ThreadPoolExecutor(max_workers=cfg.get("workers", 4)) as pool:
-        for item, text in zip(targets, pool.map(grab, targets)):
-            item["text"] = " ".join(text.split())[:cap]
-            if not item["text"]:
-                log.info("no article text from %s", item["link"][:120])
-    log.info("full text: %d/%d articles in %.1fs", sum(1 for i in targets if i["text"]),
-             len(targets), (datetime.now() - t0).total_seconds())
+        while got < count and queue and attempts < budget:
+            take = min(count - got, len(queue), budget - attempts)
+            batch, queue = queue[:take], queue[take:]
+            attempts += len(batch)
+            for item, text in zip(batch, pool.map(grab, batch)):
+                item["text"] = " ".join(text.split())[:cap]
+                if item["text"]:
+                    got += 1
+                else:
+                    log.info("no article text from %s", item["link"][:120])
+    log.info("full text: %d/%d articles from %d attempts in %.1fs",
+             got, count, attempts, (datetime.now() - t0).total_seconds())
 
 
 def build_digest(path, items):

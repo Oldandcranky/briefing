@@ -14,7 +14,9 @@ Each run:
    three outlets ran gets covered once, and is treated as one of the day's big
    ones.
 2. Fetches the full article text for the top stories (not just the RSS blurb)
-   so the hosts have something to actually talk about.
+   so the hosts have something to actually talk about. Pages that extract to
+   nothing — a Reddit comment thread has no article body — are replaced by
+   reaching further down the ranking, up to `full_text.max_attempts`.
 3. Builds a markdown digest, keeping yesterday's alongside it as a second
    source so the episode leads with what has *changed*.
 4. Creates a fresh NotebookLM notebook, uploads both, and generates an audio
