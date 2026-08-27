@@ -1,0 +1,27 @@
+# Copy to config.yaml in the output dir (BRIEFING_CONFIG, default /data/config.yaml).
+# Read at runtime from the mounted volume — no rebuild needed after edits.
+
+feeds:
+  Hacker News: https://news.ycombinator.com/rss
+  Ars Technica: https://feeds.arstechnica.com/arstechnica/index
+  BBC World: https://feeds.bbci.co.uk/news/world/rss.xml
+
+max_per_feed: 8
+
+audio:
+  prompts:               # one is picked at random each run
+    - "Two hosts, brisk news briefing, no filler. Lead with what changed today."
+    - "Two hosts, morning news rundown. Group related stories, skip the chit-chat."
+  format: brief          # deep-dive | brief | critique | debate
+  length: short          # short | default | long
+
+feed:
+  title: Daily Briefing
+  base_url: https://example.com/briefing   # public URL where the output dir is served
+  keep_episodes: 14      # older episodes are deleted
+
+email:
+  to: you@example.com
+  from: yourname@gmail.com   # must match the Gmail app-password account (SMTP_PASSWORD)
+  smtp_host: smtp.gmail.com
+  smtp_port: 587

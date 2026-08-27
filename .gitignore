@@ -1,0 +1,11 @@
+# Secrets — never commit
+.env
+auth/
+
+# Local config (copy config.yaml.example instead)
+config.yaml
+
+# Cruft
+*.bak*
+__pycache__/
+.DS_Store

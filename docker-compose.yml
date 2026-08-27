@@ -1,0 +1,21 @@
+services:
+  briefing:
+    build: .
+    container_name: briefing
+    restart: "no"          # started on a schedule, not kept running
+    environment:
+      - TZ=${TZ:-UTC}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SYSLOG_HOST=${SYSLOG_HOST:-}   # optional: mirror logs to a syslog server
+      - SYSLOG_TAG=${SYSLOG_TAG:-briefing}
+    volumes:
+      # Adjust to wherever this repo and the output dir live on your host.
+      - /volume1/docker/briefing/auth:/root/.notebooklm
+      - /volume1/web/briefing:/data
+      # Bind-mount the script over the baked-in copy so edits don't need a rebuild.
+      - /volume1/docker/briefing/briefing.py:/app/briefing.py
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
