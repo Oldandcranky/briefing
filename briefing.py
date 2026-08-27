@@ -36,6 +36,9 @@ UA = "Mozilla/5.0 (compatible; briefing/1.0)"
 DELTA_NOTE = (" Yesterday's digest is attached as a second source: lead with what is new or "
               "has moved since then, and don't re-tell stories that haven't changed.")
 
+# NotebookLM's source citations: [1], [1, 2], [1-3].
+CITE = re.compile(r"\s*\[\d+(?:\s*[-–,]\s*\d+)*\]")
+
 # Words too common to help decide whether two headlines are the same story.
 STOP = {"the", "a", "an", "of", "to", "in", "for", "on", "and", "as", "at", "by", "with",
         "from", "after", "over", "into", "its", "is", "are", "was", "were", "be", "has",
@@ -45,7 +48,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(OUT / "briefing.log")])
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(OUT / "briefing.log")])
 log = logging.getLogger("briefing")
 
 # Optional: mirror logs to a syslog server (e.g. the NAS's log center).
@@ -86,8 +89,10 @@ def clean(answer):
             continue
         if not re.match(r"^([-*•]|\d+[.)])\s", s):
             continue
-        s = re.sub(r"\s*\[\d+\]", "", s).replace("\\$", "$").replace("**", "")
-        lines.append(s)
+        s = re.sub(r"^([-*•]|\d+[.)])\s*", "", s)      # normalise every marker to "- "
+        s = CITE.sub("", s).replace("\\$", "$").replace("**", "")
+        s = re.sub(r"\*([^*]+)\*", r"\1", s)           # markdown emphasis reads as litter
+        lines.append(f"- {s.strip()}")
     return "\n".join(lines)
 
 
@@ -204,7 +209,7 @@ def episode_title(nb, stamp, points):
                             "the biggest stories. No quotes, no preamble.",
                             "-n", nb, "--json")).get("answer", "")
         title = next((ln.strip(" \"'*.#") for ln in answer.splitlines() if ln.strip()), "")
-        title = re.sub(r"\s*\[\d+\]", "", title)
+        title = CITE.sub("", title).strip(" \"'*.#")
     except Exception:
         log.warning("title ask failed", exc_info=True)
     if not title or len(title) > 80:
