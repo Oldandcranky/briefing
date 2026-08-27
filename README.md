@@ -98,6 +98,33 @@ Serve the output dir over HTTPS (e.g. `tailscale serve`, nginx, or the NAS's
 web station) at `feed.base_url`. Point your podcast app at
 `<base_url>/feed.xml`, or just open `<base_url>/` to listen in a browser.
 
+## Deploying
+
+`deploy.sh` lives next to `docker-compose.yml` on the host and updates it from
+this repo:
+
+```bash
+./deploy.sh --check
+```
+
+That reports what's live, what's upstream, and whether anyone edited
+`briefing.py` on the host — then builds a candidate image, runs the suite
+inside it, and checks the machine's own `config.yaml` against the new code,
+all without touching anything. Drop `--check` to actually swap and rebuild.
+
+Nothing is replaced until all three pass. The config check is the one CI can't
+do: CI only ever sees `config.yaml.example`, while the host has its own feeds,
+prompts and settings, and a renamed key would otherwise surface at 6am as a
+failed run. Each deploy backs up the previous `briefing.py` and prints its
+rollback command; a failed rebuild rolls back on its own.
+
+It fetches the tarball for a resolved commit SHA rather than the branch —
+branch tarballs and `raw.githubusercontent.com` are CDN-cached and will hand
+back the previous commit for several minutes after a push.
+
+`docker-compose.yml` is reported but never overwritten: the volume paths belong
+to the host, not the repo.
+
 ## Scheduling
 
 Any cron will do. On Synology, a DSM Task Scheduler task runs the container
