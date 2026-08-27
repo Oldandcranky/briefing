@@ -2,6 +2,7 @@
 """Daily news briefing: RSS -> NotebookLM audio overview -> podcast feed + email."""
 import calendar
 import concurrent.futures as futures
+import hashlib
 import html
 import json
 import logging
@@ -47,10 +48,15 @@ STOP = {"the", "a", "an", "of", "to", "in", "for", "on", "and", "as", "at", "by"
         "have", "will", "says", "say", "said", "new", "amid", "how", "why", "what"}
 
 OUT.mkdir(parents=True, exist_ok=True)
+LOG_FILE = OUT / "briefing.log"
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(OUT / "briefing.log")])
+    handlers=[logging.StreamHandler(sys.stdout),
+              # Bounded: a daily DEBUG log otherwise grows without limit, and this
+              # one sits in a web-served directory.
+              logging.handlers.RotatingFileHandler(
+                  LOG_FILE, maxBytes=2_000_000, backupCount=5)])
 log = logging.getLogger("briefing")
 
 # trafilatura logs every scored DOM node at DEBUG, which buries our own lines
@@ -234,9 +240,11 @@ def collect_items(blocked=frozenset()):
                 # a months-old item sneaks into a "last 48 hours" briefing.
                 if ts is None:
                     undated += 1
+                    log.debug("drop undated: %s", title[:90])
                     continue
                 if (now - ts) / 3600 > window:
                     stale += 1
+                    log.debug("drop stale (%.0fh): %s", (now - ts) / 3600, title[:90])
                     continue
             item = {"title": title, "feed": name, "feeds": [name],
                     "link": e.get("link") or "", "summary": plain(e.get("summary")),
@@ -244,6 +252,7 @@ def collect_items(blocked=frozenset()):
             item["key"] = item_key(item)
             if item["key"] in blocked:
                 aired += 1
+                log.debug("drop already aired: %s", title[:90])
                 continue
             dup = next((i for i in items
                         if i["key"] == item["key"] or same_story(i["title"], title)), None)
@@ -251,11 +260,20 @@ def collect_items(blocked=frozenset()):
                 if name not in dup["feeds"]:
                     dup["feeds"].append(name)
                 seen += 1
+                log.debug("fold duplicate: %s -> %s", title[:70], dup["title"][:70])
                 continue
             items.append(item)
             kept += 1
         log.info("feed %s: %d entries (http %s) -> kept %d (%d stale, %d undated, %d aired)",
                  name, len(d.entries), d.get("status"), kept, stale, undated, aired)
+        # A feed that returns nothing contributes silently otherwise — Reddit answers
+        # 429 under load and simply vanishes from the briefing.
+        if not d.entries:
+            log.warning("feed %s returned no entries (http %s)%s", name, d.get("status"),
+                        f": {d.bozo_exception}" if getattr(d, "bozo_exception", None) else "")
+        elif not kept:
+            log.warning("feed %s contributed nothing: %d stale, %d undated, %d aired",
+                        name, stale, undated, aired)
     if not items:
         raise RuntimeError(
             f"no usable headlines: every entry was stale (>{window}h), undated, "
@@ -293,8 +311,10 @@ def add_full_text(items):
     with futures.ThreadPoolExecutor(max_workers=cfg.get("workers", 4)) as pool:
         for item, text in zip(targets, pool.map(grab, targets)):
             item["text"] = " ".join(text.split())[:cap]
-    log.info("full text: %d/%d articles in %ds", sum(1 for i in targets if i["text"]),
-             len(targets), (datetime.now() - t0).seconds)
+            if not item["text"]:
+                log.info("no article text from %s", item["link"][:120])
+    log.info("full text: %d/%d articles in %.1fs", sum(1 for i in targets if i["text"]),
+             len(targets), (datetime.now() - t0).total_seconds())
 
 
 def build_digest(path, items):
@@ -554,6 +574,48 @@ def send_mail(subject, body):
         log.exception("email failed")
 
 
+def banner():
+    """What is actually running. First thing to check when a run misbehaves.
+
+    The md5 is of this very file, so it can be compared directly against what
+    deploy.sh recorded on the host — the question "is the box running the code I
+    think it is?" should never need an investigation.
+    """
+    try:
+        version = hashlib.md5(Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        version = "unknown"
+    log.info("briefing.py md5 %s | python %s", version, sys.version.split()[0])
+    try:
+        p = subprocess.run(["notebooklm", "--version"], capture_output=True,
+                           text=True, timeout=60)
+        log.info("notebooklm cli: %s", ((p.stdout or p.stderr).strip() or "no version")[:120])
+    except Exception as ex:
+        log.warning("notebooklm cli not runnable: %s", type(ex).__name__)
+    a = CFG["audio"]
+    log.info("config %s: %d feeds, max_per_feed=%s, window=%sh, ledger=%sd, bullets=%s, "
+             "audio=%s/%s, keep=%s", CFG_PATH, len(CFG["feeds"]), CFG["max_per_feed"],
+             CFG.get("max_age_hours", 48), CFG.get("ledger_days", 7), CFG.get("bullets", 12),
+             a["format"], a["length"], CFG["feed"]["keep_episodes"])
+    # Degraded modes are silent by design elsewhere; say them out loud here.
+    log.info("full_text=%s | smtp=%s | healthcheck=%s | syslog=%s",
+             f"on (trafilatura {trafilatura.__version__})" if trafilatura else "OFF (trafilatura missing)",
+             "on" if os.environ.get("SMTP_PASSWORD") else "OFF (no email will be sent)",
+             "on" if os.environ.get("HEALTHCHECK_URL") else "off",
+             os.environ.get("SYSLOG_HOST") or "off")
+
+
+def log_tail(lines=50, per_line=300, cap=12_000):
+    """Recent log lines for the failure email, so a 6am post-mortem needs no SSH."""
+    try:
+        text = LOG_FILE.read_text(errors="replace").splitlines()
+    except OSError as ex:
+        return f"(could not read {LOG_FILE}: {type(ex).__name__})"
+    out = [ln[:per_line] + ("…" if len(ln) > per_line else "") for ln in text[-lines:]]
+    joined = "\n".join(out)
+    return joined[-cap:] if len(joined) > cap else joined
+
+
 def episode_link(stamp):
     """The listening page, anchored at this episode — not a 60MB download link."""
     return f"{CFG['feed']['base_url'].rstrip('/')}/#{stamp}"
@@ -567,18 +629,23 @@ def ping_healthcheck(ok):
     try:
         urllib.request.urlopen(url if ok else url.rstrip("/") + "/fail", timeout=10)
         log.info("healthcheck pinged (%s)", "ok" if ok else "fail")
-    except Exception:
-        log.warning("healthcheck ping failed", exc_info=True)
+    except Exception as ex:
+        # No traceback: it would print the ping URL, and this log is web-served.
+        log.warning("healthcheck ping failed: %s", type(ex).__name__)
 
 
 def main():
     stamp = f"{datetime.now():%Y-%m-%d}"
     audio, digest = OUT / f"{stamp}.m4a", OUT / "digest.md"
-    log.info("=== run start %s (config %s) ===", stamp, CFG_PATH)
+    started = datetime.now()
+    log.info("=== run start %s ===", stamp)
+    banner()
     ledger, days = OUT / "aired.jsonl", CFG.get("ledger_days", 7)
     try:
         prev = rotate_digest(digest, OUT / "digest-yesterday.md")
-        items = collect_items(recent_keys(ledger, days))
+        blocked = recent_keys(ledger, days)
+        log.info("ledger: %d stories blocked from the last %sd", len(blocked), days)
+        items = collect_items(blocked)
         add_full_text(items)
         build_digest(digest, items)
         points, title = make_episode(digest, prev, audio, stamp)
@@ -594,12 +661,22 @@ def main():
         write_feed(eps)
         write_index(eps)
         send_mail(title, f"{points}\n\nListen: {episode_link(stamp)}")
-        log.info("=== run ok ===")
+        mins = (datetime.now() - started).total_seconds() / 60
+        log.info("=== run ok in %.1f min: %d stories, %d with article text, "
+                 "%d bullets, %s (%.1f MB, %s) ===",
+                 mins, len(items), sum(1 for i in items if i["text"]),
+                 len(points.splitlines()), audio.name, audio.stat().st_size / 1e6,
+                 next((e["clock"] for e in eps if e["file"] == audio), "?"))
         ping_healthcheck(ok=True)
     except Exception as ex:
-        log.exception("=== run FAILED ===")
-        send_mail(f"Briefing {stamp} FAILED", f"{type(ex).__name__}: {ex}\n\n"
-                  f"Full log: {OUT / 'briefing.log'}")
+        mins = (datetime.now() - started).total_seconds() / 60
+        log.exception("=== run FAILED after %.1f min ===", mins)
+        # Carry the evidence into the email: the point of failure at 6am is that
+        # nobody is going to SSH in to read a log.
+        send_mail(f"Briefing {stamp} FAILED",
+                  f"{type(ex).__name__}: {ex}\n\n"
+                  f"Failed after {mins:.1f} minutes. Last lines of {LOG_FILE}:\n\n"
+                  f"{log_tail()}\n")
         ping_healthcheck(ok=False)
         sys.exit(1)
 

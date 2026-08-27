@@ -8,6 +8,7 @@ Everything that needs NotebookLM is stubbed; the rest runs for real against a
 temporary output directory. Exit code 0 means pass.
 """
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -350,6 +351,66 @@ check("multi-feed stories noted",
           __import__("html").escape))
 check("tags balanced",
       all(page.count(f"<{t}") == page.count(f"</{t}>") for t in ("article", "ul", "li", "h2")))
+
+section("diagnostics")
+import logging  # noqa: E402
+b.banner()
+blog = (OUT / "briefing.log").read_text()
+check("logs its own md5", re.search(r"briefing\.py md5 [0-9a-f]{32}", blog) is not None)
+check("md5 matches the file on disk",
+      hashlib.md5((ROOT / "briefing.py").read_bytes()).hexdigest() in blog)
+check("logs python version", "python 3." in blog)
+check("logs the resolved config", "feeds, max_per_feed=" in blog and "window=48h" in blog)
+check("names degraded modes", "full_text=" in blog and "smtp=" in blog)
+check("log file rotates",
+      any(isinstance(h, logging.handlers.RotatingFileHandler)
+          for h in logging.getLogger().handlers))
+
+tail = b.log_tail(lines=5)
+check("tail returns recent lines", tail and len(tail.splitlines()) <= 5, f"{len(tail.splitlines())}")
+long_line = "x" * 5000
+b.log.info(long_line)
+check("tail truncates long lines",
+      all(len(l) <= 320 for l in b.log_tail(lines=3).splitlines()),
+      f"max {max(len(l) for l in b.log_tail(lines=3).splitlines())}")
+check("tail is capped", len(b.log_tail(lines=500)) <= 12_000)
+
+# The failure email must carry the evidence, since nobody SSHes in at 6am.
+sent = {}
+real_send = b.send_mail
+b.send_mail = lambda subject, body: sent.update(subject=subject, body=body)
+b.log.info("MARKER-a-distinctive-log-line")
+try:
+    raise RuntimeError("audio generation exploded")
+except RuntimeError as ex:
+    b.send_mail(f"Briefing 2026-08-26 FAILED",
+                f"{type(ex).__name__}: {ex}\n\nLast lines:\n\n{b.log_tail()}")
+check("failure email names the error", "RuntimeError: audio generation exploded" in sent["body"])
+check("failure email carries the log", "MARKER-a-distinctive-log-line" in sent["body"])
+check("failure email stays emailable", len(sent["body"]) < 20_000, f"{len(sent['body'])} bytes")
+b.send_mail = real_send
+
+check("healthcheck failure hides the url",
+      "exc_info" not in __import__("inspect").getsource(b.ping_healthcheck)
+      and "type(ex).__name__" in __import__("inspect").getsource(b.ping_healthcheck))
+
+section("silent-failure warnings")
+b.CFG["feeds"] = {"Alpha News": A}
+stub_feeds({A: []})
+try:
+    b.collect_items()
+except RuntimeError:
+    pass
+blog = (OUT / "briefing.log").read_text()
+check("an empty feed warns", "returned no entries" in blog)
+stub_feeds({A: [entry("Ancient", "https://a.example/x", hours_old=999)]})
+try:
+    b.collect_items()
+except RuntimeError:
+    pass
+blog = (OUT / "briefing.log").read_text()
+check("a feed filtered to nothing warns", "contributed nothing" in blog)
+check("dropped stories are traceable at DEBUG", "drop stale" in blog)
 
 section("prune")
 b.prune()
