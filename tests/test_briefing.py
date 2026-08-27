@@ -109,6 +109,14 @@ check("short headlines still match when identical",
 check("cross-outlet paraphrase matches",
       b.same_story("Canada announces dollar-for-dollar retaliatory tariffs",
                    "Canada hits back with dollar-for-dollar tariffs on US goods"))
+# Both outlets ran this fire on 26 Aug 2026; it scored 0.571 and was published twice,
+# because "through" was being counted as a distinctive word.
+check("the Algerian wildfires pair merges",
+      b.same_story("At least 12 dead as wildfires sweep through northern Algeria",
+                   "At least 12 dead, 54 injured as wildfires ravage northeastern Algeria"))
+check("a shared casualty phrasing is not enough on its own",
+      not b.same_story("At least 12 dead as wildfires sweep through northern Algeria",
+                       "At least 30 dead as floods sweep through eastern Pakistan"))
 check("empty title safe", not b.same_story("the a of", ""))
 
 section("citations and markers")

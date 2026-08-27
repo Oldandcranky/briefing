@@ -43,9 +43,12 @@ DELTA_NOTE = (" Yesterday's digest is attached as a second source: lead with wha
 CITE = re.compile(r"\s*\[\d+(?:\s*[-–,]\s*\d+)*\]")
 
 # Words too common to help decide whether two headlines are the same story.
+# Keep this to function words. A content verb like "sweep" also looked tempting
+# once, but dropping real vocabulary is how unrelated stories start matching.
 STOP = {"the", "a", "an", "of", "to", "in", "for", "on", "and", "as", "at", "by", "with",
-        "from", "after", "over", "into", "its", "is", "are", "was", "were", "be", "has",
-        "have", "will", "says", "say", "said", "new", "amid", "how", "why", "what"}
+        "from", "after", "over", "into", "through", "its", "is", "are", "was", "were",
+        "be", "has", "have", "will", "says", "say", "said", "new", "amid", "how", "why",
+        "what"}
 
 OUT.mkdir(parents=True, exist_ok=True)
 LOG_FILE = OUT / "briefing.log"
