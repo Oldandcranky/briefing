@@ -1,5 +1,7 @@
 # Daily briefing
 
+[![CI](https://github.com/Oldandcranky/briefing/actions/workflows/ci.yml/badge.svg)](https://github.com/Oldandcranky/briefing/actions/workflows/ci.yml)
+
 A self-hosted daily news podcast: pulls headlines from RSS feeds, has
 [NotebookLM](https://notebooklm.google.com) generate an audio overview of them,
 and publishes the result as a podcast feed plus an email digest.
@@ -133,3 +135,8 @@ everything else — freshness, dedup, the ledger, MP4 duration parsing, feed and
 page generation, pruning — runs for real against a temporary directory. Add
 `--live` to also fetch the real feeds and extract article text over the
 network.
+
+CI runs the offline suite on every push, then builds the image and imports it
+against `config.yaml.example`. That last step is the one that matters in
+practice: it catches the example config drifting out of step with the code, and
+it catches a dependency that installs but won't import.
