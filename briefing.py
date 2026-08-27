@@ -243,8 +243,8 @@ def make_episode(digest, prev, audio_path, stamp):
             raise RuntimeError(f"audio missing or too small ({size} bytes): {audio_path}")
         log.info("audio %s (%.1f MB)", audio_path.name, size / 1e6)
 
-        points = run("ask", "Six bullet points, one line each, covering the most "
-                     "important stories. No preamble.", "-n", nb, "--json")
+        points = run("ask", f"{CFG.get('bullets', 12)} bullet points, one line each, covering "
+                     "the most important stories. No preamble.", "-n", nb, "--json")
         points = clean(jparse(points).get("answer", ""))
         return points, episode_title(nb, stamp, points)
     finally:
@@ -324,7 +324,7 @@ def write_index(eps):
                          for ln in e["notes"].splitlines() if ln.strip())
         size = (f"{e['size'] / 1e6:.0f} MB" if e["size"] >= 1e6 else f"{e['size'] / 1e3:.0f} KB")
         cards.append(
-            "<article>"
+            f"<article id='{esc(e['file'].stem)}'>"
             f"<h2>{esc(e['title'])}</h2>"
             f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']} · {size}</p>"
             f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
@@ -348,7 +348,8 @@ h1 {{ font-size:1.6rem; margin:0 0 .35rem; letter-spacing:-.01em; }}
 header p {{ margin:0; color:var(--dim); font-size:.9rem; }}
 a {{ color:var(--accent); }}
 article {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-          padding:1.25rem 1.35rem; margin-bottom:1.1rem; }}
+          padding:1.25rem 1.35rem; margin-bottom:1.1rem; scroll-margin-top:1rem; }}
+article:target {{ border-color:var(--accent); }}
 h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
 audio {{ width:100%; height:38px; }}
@@ -388,6 +389,11 @@ def send_mail(subject, body):
         log.exception("email failed")
 
 
+def episode_link(stamp):
+    """The listening page, anchored at this episode — not a 60MB download link."""
+    return f"{CFG['feed']['base_url'].rstrip('/')}/#{stamp}"
+
+
 def ping_healthcheck(ok):
     """Dead-man's switch (e.g. healthchecks.io): the monitor alerts when pings stop."""
     url = os.environ.get("HEALTHCHECK_URL")
@@ -416,7 +422,7 @@ def main():
         eps = episodes()
         write_feed(eps)
         write_index(eps)
-        send_mail(title, f"{points}\n\n{CFG['feed']['base_url']}/{audio.name}")
+        send_mail(title, f"{points}\n\nListen: {episode_link(stamp)}")
         log.info("=== run ok ===")
         ping_healthcheck(ok=True)
     except Exception as ex:
