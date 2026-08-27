@@ -9,6 +9,15 @@ feeds:
 max_per_feed: 8
 bullets: 12          # show-note bullets asked of NotebookLM (also used in the email)
 
+# Stories older than this are dropped, and so are undated ones — a missing date is
+# how a months-old item sneaks into a "today" briefing. 0 disables the check.
+max_age_hours: 48
+
+# Don't re-cover a story aired in the last N days. Identity is the article URL
+# (ignoring ?utm= noise), so a follow-up article on a developing story still runs.
+# The record lives in aired.jsonl in the output dir. 0 disables the ledger.
+ledger_days: 7
+
 # Near-duplicate headlines across feeds are folded together automatically, and the
 # stories the most feeds carried are the ones fetched in full below.
 full_text:

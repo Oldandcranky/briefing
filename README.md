@@ -6,9 +6,11 @@ and publishes the result as a podcast feed plus an email digest.
 
 Each run:
 
-1. Pulls the configured RSS feeds and folds near-duplicate headlines together,
-   so a story three outlets ran gets covered once — and is treated as one of
-   the day's big ones.
+1. Pulls the configured RSS feeds, drops anything older than `max_age_hours`
+   (and anything undated), skips stories already aired in the last
+   `ledger_days`, and folds near-duplicate headlines together — so a story
+   three outlets ran gets covered once, and is treated as one of the day's big
+   ones.
 2. Fetches the full article text for the top stories (not just the RSS blurb)
    so the hosts have something to actually talk about.
 3. Builds a markdown digest, keeping yesterday's alongside it as a second
@@ -103,3 +105,29 @@ docker compose -f /path/to/docker-compose.yml run --rm briefing
 
 Check `briefing.log` in the output dir (or `docker logs briefing`) if an
 episode doesn't show up — failures also trigger the email with the error.
+
+## Not repeating yourself
+
+Two mechanisms, deliberately different in kind. Yesterday's digest is attached
+to the notebook as a second source, which *asks* the hosts to lead with what
+changed — a soft nudge, and an LLM given a fresh context each morning will
+cheerfully re-run yesterday's headline anyway. So `aired.jsonl` in the output
+dir is the hard gate: every story that made it into an episode is recorded, and
+for `ledger_days` afterwards it can't come back.
+
+Identity is the article's canonical URL — query strings and `www.` stripped —
+rather than its headline. That is the point: a developing story publishes a new
+article each day at a new URL, so follow-ups still air, while the same piece
+sitting in a feed for three days is only ever covered once.
+
+## Tests
+
+```bash
+python tests/test_briefing.py
+```
+
+Runs offline in about a second: feeds are stubbed, NotebookLM is stubbed, and
+everything else — freshness, dedup, the ledger, MP4 duration parsing, feed and
+page generation, pruning — runs for real against a temporary directory. Add
+`--live` to also fetch the real feeds and extract article text over the
+network.

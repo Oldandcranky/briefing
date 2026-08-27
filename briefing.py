@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Daily news briefing: RSS -> NotebookLM audio overview -> podcast feed + email."""
+import calendar
 import concurrent.futures as futures
 import html
 import json
@@ -13,10 +14,11 @@ import subprocess
 import time
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 from xml.sax.saxutils import escape
 
 import feedparser
@@ -113,35 +115,144 @@ def keywords(title):
 
 
 def same_story(a, b):
-    """Two headlines about one story share most of their distinctive words."""
+    """Two headlines about one story share most of their distinctive words.
+
+    Scored against the shorter headline, so a wire byline padded with extra words
+    still matches the terse version. That ratio alone is reckless on short titles
+    — "Fed cuts rates" and "Fed raises rates" share two words of three — so a few
+    words have to overlap outright before the ratio gets a say.
+    """
     ka, kb = keywords(a), keywords(b)
     if not ka or not kb:
         return False
-    return len(ka & kb) / min(len(ka), len(kb)) >= 0.6
+    shared = len(ka & kb)
+    if shared < 3:
+        return ka == kb
+    return shared / min(len(ka), len(kb)) >= 0.6
 
 
-def collect_items():
-    """Pull every feed, folding near-duplicate stories into the first feed that ran them."""
-    items = []
+def canonical_url(url):
+    """Drop www/query/fragment/trailing slash, so ?utm= copies collapse to one key."""
+    if not url:
+        return ""
+    try:
+        p = urlsplit(url.strip())
+    except ValueError:
+        return url.strip().lower()
+    host = (p.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return url.strip().lower()
+    return f"{host}{(p.path or '').rstrip('/')}".lower()
+
+
+def item_key(item):
+    """Stable identity: the canonical URL when there is one, else the flattened title."""
+    u = canonical_url(item.get("link", ""))
+    if u:
+        return f"url:{u}"
+    return "title:" + " ".join(re.sub(r"[^a-z0-9\s]", " ", item["title"].lower()).split())
+
+
+def published_ts(entry):
+    """Epoch seconds for a feed entry, or None when it carries no usable date."""
+    for field in ("published_parsed", "updated_parsed"):
+        stamp = entry.get(field)
+        if stamp:
+            try:
+                return calendar.timegm(stamp)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def recent_keys(path, days):
+    """Keys aired within the trailing window. One bad line must not blind the gate."""
+    if not days:
+        return set()
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    keys = set()
+    try:
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (rec.get("date") or "") >= cutoff and rec.get("key"):
+                keys.add(rec["key"])
+    except FileNotFoundError:
+        pass
+    return keys
+
+
+def commit_aired(path, items, stamp, days):
+    """Record what went into today's episode, dropping entries past the window."""
+    if not days:
+        return
+    cutoff = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+    kept = []
+    try:
+        for line in path.read_text().splitlines():
+            if line.strip() and (json.loads(line).get("date") or "") >= cutoff:
+                kept.append(line)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    kept += [json.dumps({"date": stamp, "key": i["key"], "title": i["title"]}) for i in items]
+    path.write_text("\n".join(kept) + "\n")
+    log.info("ledger: recorded %d stories, %d retained", len(items), len(kept))
+
+
+def collect_items(blocked=frozenset()):
+    """Pull every feed, dropping stale and already-aired stories, folding duplicates
+    into the first feed that ran them. Filtering happens before the per-feed cap, so
+    a run of old entries can't crowd out today's news."""
+    window, now = CFG.get("max_age_hours", 48), time.time()
+    items, seen = [], 0
     for fidx, (name, url) in enumerate(CFG["feeds"].items()):
         d = feedparser.parse(url, agent=UA)
-        log.info("feed %s: %d entries (http %s)", name, len(d.entries), d.get("status"))
-        for pos, e in enumerate(d.entries[: CFG["max_per_feed"]]):
+        kept = stale = undated = aired = 0
+        for e in d.entries:
+            if kept >= CFG["max_per_feed"]:
+                break
             title = plain(e.get("title"))
             if not title:
                 continue
-            dup = next((i for i in items if same_story(i["title"], title)), None)
+            if window:
+                ts = published_ts(e)
+                # A missing date is not evidence of freshness — it is the usual way
+                # a months-old item sneaks into a "last 48 hours" briefing.
+                if ts is None:
+                    undated += 1
+                    continue
+                if (now - ts) / 3600 > window:
+                    stale += 1
+                    continue
+            item = {"title": title, "feed": name, "feeds": [name],
+                    "link": e.get("link") or "", "summary": plain(e.get("summary")),
+                    "text": "", "pos": kept, "fidx": fidx}
+            item["key"] = item_key(item)
+            if item["key"] in blocked:
+                aired += 1
+                continue
+            dup = next((i for i in items
+                        if i["key"] == item["key"] or same_story(i["title"], title)), None)
             if dup:
                 if name not in dup["feeds"]:
                     dup["feeds"].append(name)
+                seen += 1
                 continue
-            items.append({"title": title, "feed": name, "feeds": [name],
-                          "link": e.get("link") or "", "summary": plain(e.get("summary")),
-                          "text": "", "pos": pos, "fidx": fidx})
+            items.append(item)
+            kept += 1
+        log.info("feed %s: %d entries (http %s) -> kept %d (%d stale, %d undated, %d aired)",
+                 name, len(d.entries), d.get("status"), kept, stale, undated, aired)
     if not items:
-        raise RuntimeError("no headlines from any feed")
-    dupes = sum(len(i["feeds"]) - 1 for i in items)
-    log.info("collected %d stories (%d duplicate headlines folded in)", len(items), dupes)
+        raise RuntimeError(
+            f"no usable headlines: every entry was stale (>{window}h), undated, "
+            "or already covered — check the feeds and max_age_hours")
+    log.info("collected %d stories (%d duplicate headlines folded in)", len(items), seen)
     return items
 
 
@@ -417,14 +528,17 @@ def main():
     stamp = f"{datetime.now():%Y-%m-%d}"
     audio, digest = OUT / f"{stamp}.m4a", OUT / "digest.md"
     log.info("=== run start %s (config %s) ===", stamp, CFG_PATH)
+    ledger, days = OUT / "aired.jsonl", CFG.get("ledger_days", 7)
     try:
         prev = rotate_digest(digest, OUT / "digest-yesterday.md")
-        items = collect_items()
+        items = collect_items(recent_keys(ledger, days))
         add_full_text(items)
         build_digest(digest, items)
         points, title = make_episode(digest, prev, audio, stamp)
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
+        # Only a finished episode counts as aired, so a failed run doesn't burn stories.
+        commit_aired(ledger, items, stamp, days)
         prune()
         eps = episodes()
         write_feed(eps)
