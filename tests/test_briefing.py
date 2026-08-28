@@ -432,6 +432,46 @@ check("build_digest takes no torrents argument",
       "torrent" not in __import__("inspect").signature(b.build_digest).parameters)
 b.CFG.pop("torrents")
 
+section("html email")
+b.CFG["weather"] = {"lat": 1, "lon": 2, "label": "Huntley, IL 60142", "periods": 4}
+b.CFG["torrents"] = {"link_base": "https://tracker.example"}
+_u.urlopen = fake_urlopen
+wx = b.fetch_weather()
+_u.urlopen = real_urlopen
+pts = "- First story happened.\n- Second story happened."
+tp = [{"id": "1", "path": "/t/1", "title": "Some Release-TEAM", "age": "3 hours ago",
+       "seeders": 616, "leechers": 5}]
+mail = b.email_html("2026-08-28 \u00b7 A Title", pts, wx, tp, "https://example.com/#2026-08-28")
+check("renders every bullet", mail.count("<li") == 3, f"{mail.count('<li')}")
+check("bullet markers stripped", "<li" in mail and ">- First" not in mail)
+check("weather shown", "81&deg;" in mail and "Huntley, IL 60142" in mail)
+check("listen button links to the page", 'href="https://example.com/#2026-08-28"' in mail)
+check("new picks section present", "Some Release-TEAM" in mail and "616 seeders" in mail)
+check("picks link to the tracker", 'href="https://tracker.example/t/1"' in mail)
+check("no external images or scripts",
+      "<img" not in mail and "<script" not in mail and "http://" not in mail)
+check("styles are inline, not a stylesheet", "<style" not in mail and "class=" not in mail)
+nasty_title = '<script>alert(1)</script> & "quotes"'
+m2 = b.email_html(nasty_title, "- <b>bold</b> attempt", wx, [], "https://e.com/")
+check("subject line content escaped", "<script>" not in m2 and "&lt;script&gt;" in m2)
+check("bullet content escaped", "<b>bold</b>" not in m2 and "&lt;b&gt;bold" in m2)
+check("no picks means no picks section", "new pick" not in m2)
+m3 = b.email_html("T", pts, None, [], "https://e.com/")
+check("no weather means no weather block", "&deg;" not in m3)
+check("html is balanced",
+      m3.count("<table") == m3.count("</table>") and m3.count("<ul") == m3.count("</ul>"))
+
+sent = {}
+def catch(subject, body, html_body=None): sent.update(s=subject, b=body, h=html_body)
+_real_send = b.send_mail
+b.send_mail = catch
+b.send_mail("subj", "plain body", "<html>rich</html>")
+check("send_mail accepts both parts", sent["b"] == "plain body" and sent["h"] == "<html>rich</html>")
+b.send_mail = _real_send
+check("plain text is still built alongside html",
+      "html_body" in __import__("inspect").signature(b.send_mail).parameters)
+b.CFG.pop("torrents"); b.CFG.pop("weather")
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],

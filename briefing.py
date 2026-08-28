@@ -807,7 +807,86 @@ into any podcast app.</p>
     log.info("index: %d episodes", len(eps))
 
 
-def send_mail(subject, body):
+def email_html(title, points, weather, picks, link):
+    """HTML email. Inline styles and tables only — mail clients ignore stylesheets,
+    and several strip <style> outright. No images, so nothing is blocked or tracked.
+    """
+    esc = html.escape
+    ink, dim, line = "#1c1b19", "#6b6862", "#e6e2db"
+    accent, card, page = "#8a5a2b", "#ffffff", "#f4f2ee"
+
+    wx = ""
+    if weather:
+        now = weather["periods"][0]
+        rain = (f'<span style="color:{accent};font-size:13px"> &middot; '
+                f'{now["precip"]}% precip</span>' if now["precip"] else "")
+        nxt = "".join(
+            f'<td width="33%" style="width:33.3%;padding:8px 10px;border-left:1px solid {line};'
+            f'vertical-align:top">'
+            f'<div style="font-size:12px;font-weight:600;color:{ink}">{esc(p["name"])}</div>'
+            f'<div style="font-size:12px;color:{dim};padding-top:2px">{esc(p["short"])}</div>'
+            f'<div style="font-size:12px;color:{ink};padding-top:2px">{p["temp"]}&deg;</div>'
+            f'</td>' for p in weather["periods"][1:4])
+        wx = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+              f'style="border:1px solid {line};border-radius:8px;margin:0 0 22px">'
+              f'<tr><td style="padding:14px 16px">'
+              f'<span style="font-size:30px;font-weight:600;color:{ink}">{now["temp"]}&deg;</span>'
+              f'<span style="font-size:15px;font-weight:600;color:{ink};padding-left:10px">'
+              f'{esc(now["short"])}</span>'
+              f'<div style="font-size:13px;color:{dim};padding-top:3px">'
+              f'{esc(weather["label"])} &middot; {esc(now["name"].lower())}'
+              f'{" &middot; wind " + esc(now["wind"]) if now["wind"] else ""}{rain}</div>'
+              f'</td></tr><tr><td style="padding:0"><table role="presentation" width="100%" '
+              f'cellpadding="0" cellspacing="0" style="border-top:1px solid {line}">'
+              f'<tr>{nxt}</tr></table></td></tr></table>')
+
+    bullets = "".join(
+        f'<li style="margin:0 0 9px;line-height:1.55">{esc(re.sub(r"^-\s*", "", ln))}</li>'
+        for ln in points.splitlines() if ln.strip())
+
+    tor = ""
+    if picks:
+        base = (CFG.get("torrents") or {}).get("link_base", "").rstrip("/")
+        rows = []
+        for t in picks:
+            href = safe_link(base + t.get("path", "")) if base else ""
+            name = esc(t["title"])
+            label = (f'<a href="{esc(href)}" style="color:{ink};text-decoration:none">{name}</a>'
+                     if href else name)
+            meta = " &middot; ".join(x for x in (esc(t["age"]),
+                                    f'{t["seeders"]} seeders' if t["seeders"] else "") if x)
+            rows.append(f'<li style="margin:0 0 8px;line-height:1.4">{label}'
+                        f'<div style="font-size:12px;color:{dim}">{meta}</div></li>')
+        tor = (f'<div style="border-top:1px solid {line};margin-top:26px;padding-top:18px">'
+               f'<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;'
+               f'color:{dim};font-weight:600;padding-bottom:10px">'
+               f'{len(picks)} new pick{"" if len(picks) == 1 else "s"}</div>'
+               f'<ul style="margin:0;padding-left:18px;font-size:14px;color:{ink}">'
+               f'{"".join(rows)}</ul></div>')
+
+    return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'style="background:{page};padding:22px 12px">'
+            f'<tr><td align="center">'
+            f'<table role="presentation" width="600" cellpadding="0" cellspacing="0" '
+            f'style="max-width:600px;width:100%;background:{card};border:1px solid {line};'
+            f'border-radius:10px">'
+            f'<tr><td style="padding:26px 26px 22px;'
+            f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Helvetica,Arial,'
+            f'sans-serif;color:{ink}">'
+            f'<div style="font-size:19px;font-weight:600;line-height:1.3;padding-bottom:18px">'
+            f'{esc(title)}</div>'
+            f'{wx}'
+            f'<ul style="margin:0;padding-left:19px;font-size:15px;color:{ink}">{bullets}</ul>'
+            f'<div style="padding-top:24px">'
+            f'<a href="{esc(link)}" style="background:{accent};color:#fff;text-decoration:none;'
+            f'font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;'
+            f'display:inline-block">Listen to the episode</a></div>'
+            f'{tor}'
+            f'</td></tr></table></td></tr></table></body></html>')
+
+
+def send_mail(subject, body, html_body=None):
     pw = os.environ.get("SMTP_PASSWORD")
     if not pw:
         log.warning("SMTP_PASSWORD unset, skipping email")
@@ -816,6 +895,8 @@ def send_mail(subject, body):
     m = EmailMessage()
     m["Subject"], m["From"], m["To"] = subject, e["from"], e["to"]
     m.set_content(body)
+    if html_body:
+        m.add_alternative(html_body, subtype="html")
     try:
         with smtplib.SMTP(e["smtp_host"], e["smtp_port"], timeout=30) as s:
             s.starttls()
@@ -936,10 +1017,11 @@ def main():
         eps = episodes()
         write_feed(eps)
         write_index(eps)
-        wx_line = weather_summary(weather)
-        send_mail(title, (f"{wx_line}\n\n" if wx_line else "")
-                  + f"{points}\n\nListen: {episode_link(stamp)}"
-                  + torrents_mail(fresh_picks))
+        wx_line, link = weather_summary(weather), episode_link(stamp)
+        send_mail(title,
+                  (f"{wx_line}\n\n" if wx_line else "") + f"{points}\n\nListen: {link}"
+                  + torrents_mail(fresh_picks),
+                  email_html(title, points, weather, fresh_picks, link))
         mins = (datetime.now() - started).total_seconds() / 60
         log.info("=== run ok in %.1f min: %d stories, %d with article text, "
                  "%d bullets, %s (%.1f MB, %s) ===",
