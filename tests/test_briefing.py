@@ -339,6 +339,78 @@ hb = b.weather_block(hostile, esc)
 check("weather text is escaped", "<script>" not in hb and "&lt;script&gt;" in hb)
 _u.urlopen = real_urlopen
 
+section("torrents")
+FIXTURE = (ROOT / "tests" / "fixtures" / "picks.html").read_text()
+picks = b.parse_picks(FIXTURE, "Staff Picks")
+check("parses every staff pick", len(picks) == 15, f"{len(picks)}")
+check("ids and paths captured",
+      picks[0]["id"].isdigit() and picks[0]["path"] == f"/t/{picks[0]['id']}", picks[0])
+check("titles cleaned", picks[0]["title"] == "Example Show S01E01 1080p WEB-DL x264-GROUP",
+      picks[0]["title"])
+check("age captured", picks[0]["age"].endswith("ago"), picks[0]["age"])
+check("seeders and leechers are numbers",
+      isinstance(picks[0]["seeders"], int) and picks[0]["seeders"] > 0, picks[0])
+hot = b.parse_picks(FIXTURE, "HOT RIGHT NOW")
+check("a different section parses separately", len(hot) == 15 and hot[0]["title"] != picks[0]["title"])
+check("sections don't bleed into each other",
+      not ({p["title"] for p in picks} & {p["title"] for p in hot}))
+check("missing heading is not an error", b.parse_picks(FIXTURE, "No Such Table") == [])
+check("a login page parses to nothing",
+      b.parse_picks("<html><body>Please log in</body></html>", "Staff Picks") == [])
+
+tled = OUT / "torrents-seen.jsonl"
+tled.unlink(missing_ok=True)
+check("everything is new the first time", len(b.unseen_torrents(picks, tled, 30)) == 15)
+b.remember_torrents(picks, tled, "2026-08-28", 30)
+check("nothing is new the second time", b.unseen_torrents(picks, tled, 30) == [])
+extra = picks + [{"id": "999999", "path": "/t/999999", "title": "Brand New Release-TEAM",
+                  "age": "5 minutes ago", "seeders": 3, "leechers": 1}]
+fresh = b.unseen_torrents(extra, tled, 30)
+check("only the genuinely new one surfaces",
+      len(fresh) == 1 and fresh[0]["id"] == "999999", [f["id"] for f in fresh])
+tled.write_text('{"date": "2026-08-28", "id": "' + picks[0]["id"] + '"}\nGARBAGE\n')
+check("a corrupt line doesn't reset the history",
+      len(b.unseen_torrents(picks, tled, 30)) == 14, f"{len(b.unseen_torrents(picks, tled, 30))}")
+old = "\n".join('{"date": "2020-01-01", "id": "%s"}' % p["id"] for p in picks)
+tled.write_text(old + "\n")
+check("history outside the window is ignored", len(b.unseen_torrents(picks, tled, 30)) == 15)
+b.remember_torrents(picks, tled, "2026-08-28", 30)
+check("history is pruned when rewritten", "2020-01-01" not in tled.read_text())
+
+b.CFG["torrents"] = {"url": "", "cookie_env": "TEST_COOKIE"}
+check("no url configured means no fetch", b.fetch_torrents() == [])
+b.CFG["torrents"] = {"url": "https://tracker.example/t", "cookie_env": "TEST_COOKIE"}
+os.environ.pop("TEST_COOKIE", None)
+check("a missing cookie is survivable, not fatal", b.fetch_torrents() == [])
+
+esc = __import__("html").escape
+b.CFG["torrents"]["link_base"] = "https://tracker.example"
+blk = b.torrents_block(fresh, esc)
+check("page section lists the new pick", "Brand New Release-TEAM" in blk)
+check("page section links to the tracker", "href='https://tracker.example/t/999999'" in blk)
+check("page section shows age and seeders", "5 minutes ago" in blk and "3 seeders" in blk)
+check("nothing new means no section", b.torrents_block([], esc) == "")
+nasty = [{"id": "1", "path": "/t/1", "title": "<img src=x onerror=alert(1)>",
+          "age": "1 hour ago", "seeders": 1, "leechers": 0}]
+check("torrent titles are escaped",
+      "<img src=x" not in b.torrents_block(nasty, esc)
+      and "&lt;img" in b.torrents_block(nasty, esc))
+mail = b.torrents_mail(fresh)
+check("email tail names the pick", "Brand New Release-TEAM" in mail)
+check("email tail carries the link", "https://tracker.example/t/999999" in mail)
+check("email tail empty when nothing new", b.torrents_mail([]) == "")
+# The whole point: NotebookLM must never see this, so the hosts never mention it.
+dt = OUT / "digest-torrents.md"
+b.build_digest(dt, [{"title": "A news story", "feed": "Alpha News", "feeds": ["Alpha News"],
+                     "text": "", "summary": "s", "link": "https://a.example/1",
+                     "pos": 0, "fidx": 0, "key": "url:a.example/1"}], None)
+dtext = dt.read_text()
+check("torrents never reach the digest",
+      "Brand New Release" not in dtext and "torrent" not in dtext.lower())
+check("build_digest takes no torrents argument",
+      "torrent" not in __import__("inspect").signature(b.build_digest).parameters)
+b.CFG.pop("torrents")
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],

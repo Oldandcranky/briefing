@@ -37,6 +37,17 @@ full_text:
                      # body to extract), so keep reaching down the ranking to reach `count`
                      # — but stop here. Defaults to count x 2.
 
+# Optional. A listing page behind a session cookie, diffed against a local history
+# so only entries you haven't been shown before appear. It goes in the email and on
+# the page ONLY — never into the digest, so it stays out of the audio. Omit to skip.
+# torrents:
+#   url: https://tracker.example/t
+#   section: "Staff Picks"     # the table heading to read
+#   link_base: https://tracker.example
+#   cookie_env: TRACKER_COOKIE # name of the .env var holding the Cookie header
+#   history_days: 30           # how long an entry counts as "already seen"
+#   max_shown: 15
+
 audio:
   prompts:               # one is picked at random each run
     - "Two hosts, brisk news briefing, no filler. Lead with what changed today."

@@ -333,6 +333,108 @@ def add_full_text(items):
 
 
 
+# Some listing pages only answer a browser-shaped request.
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
+
+
+def parse_picks(text, heading):
+    """Rows of one named table on a listing page.
+
+    The markup leaves most tags unclosed, so this walks <tr> chunks between the
+    heading and the table's own </table> rather than trusting a tree parser.
+    """
+    low = text.lower()
+    start = low.find(heading.lower())
+    if start < 0:
+        return []
+    end = low.find("</table>", start)
+    segment = text[start:end if end > 0 else None]
+    rows = []
+    for chunk in segment.split("<tr>"):
+        link = re.search(r'href="(/t/(\d+))"[^>]*>([^<]+)</a>', chunk)
+        if not link:
+            continue
+        age = re.search(r'<div class="sub">\(([^)]*)\)</div>', chunk)
+        nums = re.findall(r"<td>(\d[\d,]*)", chunk)
+        rows.append({"id": link.group(2), "path": link.group(1),
+                     "title": plain(link.group(3)),
+                     "age": age.group(1).strip() if age else "",
+                     "seeders": int(nums[0].replace(",", "")) if nums else 0,
+                     "leechers": int(nums[1].replace(",", "")) if len(nums) > 1 else 0})
+    return rows
+
+
+def fetch_torrents():
+    """The configured listing, behind its session cookie. Never fatal."""
+    cfg = CFG.get("torrents") or {}
+    url, var = cfg.get("url"), cfg.get("cookie_env", "TORRENTS_COOKIE")
+    if not url:
+        return []
+    cookie = os.environ.get(var, "").strip()
+    if not cookie:
+        log.warning("torrents: %s is unset, skipping the section", var)
+        return []
+    try:
+        # No Accept-Encoding: urllib will not decompress what it asks for.
+        req = urllib.request.Request(url, headers={
+            "Cookie": cookie, "User-Agent": cfg.get("user_agent", BROWSER_UA),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception as ex:
+        log.warning("torrents unavailable: %s", type(ex).__name__)
+        return []
+    picks = parse_picks(body, cfg.get("section", "Staff Picks"))
+    if not picks:
+        # An expired cookie returns a login page, which parses to nothing.
+        log.warning("torrents: parsed no rows from %s (cookie expired, or the markup moved?)",
+                    url)
+    else:
+        log.info("torrents: %d listed under %r", len(picks), cfg.get("section", "Staff Picks"))
+    return picks
+
+
+def unseen_torrents(picks, path, days):
+    """Only what hasn't been listed before, so the section stays genuinely new."""
+    if not picks:
+        return []
+    seen = set()
+    cutoff = (datetime.now() - timedelta(days=days or 30)).strftime("%Y-%m-%d")
+    try:
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue          # one bad line must not reset the whole history
+            if (rec.get("date") or "") >= cutoff and rec.get("id"):
+                seen.add(rec["id"])
+    except FileNotFoundError:
+        pass
+    fresh = [p for p in picks if p["id"] not in seen]
+    log.info("torrents: %d new, %d already listed", len(fresh), len(picks) - len(fresh))
+    return fresh
+
+
+def remember_torrents(picks, path, stamp, days):
+    """Record everything on the page, not just what was shown, and stay bounded."""
+    if not picks:
+        return
+    cutoff = (datetime.now() - timedelta(days=(days or 30) * 2)).strftime("%Y-%m-%d")
+    kept = []
+    try:
+        for line in path.read_text().splitlines():
+            if line.strip() and (json.loads(line).get("date") or "") >= cutoff:
+                kept.append(line)
+    except (FileNotFoundError, json.JSONDecodeError):
+        kept = []
+    kept += [json.dumps({"date": stamp, "id": p["id"], "title": p["title"]}) for p in picks]
+    path.write_text("\n".join(kept) + "\n")
+
+
 def fetch_weather():
     """Today's outlook from the National Weather Service. No API key; US only.
 
@@ -474,7 +576,7 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
 
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
-        for ext in (".txt", ".title", ".sources", ".weather"):
+        for ext in (".txt", ".title", ".sources", ".weather", ".torrents"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
@@ -502,7 +604,7 @@ def episodes():
     out = []
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
         notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
-        wx = f.with_suffix(".weather")
+        wx, tor = f.with_suffix(".weather"), f.with_suffix(".torrents")
         secs = duration(f)
         try:
             sources = json.loads(srcs.read_text()) if srcs.exists() else []
@@ -514,8 +616,13 @@ def episodes():
         except json.JSONDecodeError:
             log.warning("unreadable weather sidecar: %s", wx.name)
             weather = None
+        try:
+            torrents = json.loads(tor.read_text()) if tor.exists() else []
+        except json.JSONDecodeError:
+            log.warning("unreadable torrents sidecar: %s", tor.name)
+            torrents = []
         out.append({
-            "sources": sources, "weather": weather,
+            "sources": sources, "weather": weather, "torrents": torrents,
             "file": f, "size": f.stat().st_size, "secs": secs,
             "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
             # RSS wants UTC; the page should show the day the episode is named for.
@@ -563,6 +670,25 @@ def weather_block(w, esc):
             f"</div><div class=wx-strip>{later}</div></div>")
 
 
+def torrents_block(picks, esc):
+    """New listings only. Deliberately absent from the digest — the hosts never see this."""
+    if not picks:
+        return ""
+    base = (CFG.get("torrents") or {}).get("link_base", "").rstrip("/")
+    rows = []
+    for t in picks:
+        href = safe_link(base + t.get("path", "")) if base else ""
+        name = esc(t["title"])
+        label = f"<a href='{esc(href)}' target=_blank rel='noopener noreferrer'>{name}</a>" \
+            if href else name
+        meta = " &middot; ".join(x for x in (esc(t["age"]) if t["age"] else "",
+                                             f"{t['seeders']} seeders" if t["seeders"] else "") if x)
+        rows.append(f"<li>{label}<span class=tmeta>{meta}</span></li>")
+    plural = "" if len(picks) == 1 else "s"
+    return (f"<div class=torrents><h3>{len(picks)} new pick{plural}</h3>"
+            f"<ul class=tlist>{''.join(rows)}</ul></div>")
+
+
 def sources_block(sources, esc):
     """Every story that went into the episode, collapsed so it doesn't bury the notes."""
     if not sources:
@@ -601,6 +727,7 @@ def write_index(eps):
             + weather_block(e.get("weather"), esc)
             + (f"<ul>{points}</ul>" if points else "")
             + sources_block(e["sources"], esc)
+            + torrents_block(e.get("torrents"), esc)
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
     (OUT / "index.html").write_text(f"""<!doctype html>
 <html lang=en><meta charset=utf-8>
@@ -624,6 +751,13 @@ article {{ background:var(--card); border:1px solid var(--line); border-radius:1
 article:target {{ border-color:var(--accent); }}
 h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
+.torrents {{ margin-top:1.1rem; padding-top:.9rem; border-top:1px solid var(--line); }}
+.torrents h3 {{ margin:0 0 .5rem; font-size:.72rem; letter-spacing:.09em;
+               text-transform:uppercase; color:var(--dim); font-weight:600; }}
+.tlist {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.4rem; }}
+.tlist li {{ display:flex; flex-direction:column; gap:.1rem; font-size:.86rem;
+            word-break:break-word; }}
+.tmeta {{ font-size:.72rem; color:var(--dim); }}
 .wx {{ margin:1rem 0 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
 .wx-now {{ display:flex; align-items:center; gap:1rem; padding:.9rem 1.1rem; }}
 .wx-temp {{ font-size:2.1rem; font-weight:600; line-height:1; letter-spacing:-.02em; }}
@@ -729,6 +863,20 @@ def log_tail(lines=50, per_line=300, cap=12_000):
     return joined[-cap:] if len(joined) > cap else joined
 
 
+def torrents_mail(picks):
+    """Plain-text tail for the email; empty when nothing new turned up."""
+    if not picks:
+        return ""
+    base = (CFG.get("torrents") or {}).get("link_base", "").rstrip("/")
+    lines = [f"\n\nNew picks ({len(picks)}):"]
+    for t in picks:
+        meta = " / ".join(x for x in (t["age"], f"{t['seeders']} seeders" if t["seeders"] else "") if x)
+        lines.append(f"  {t['title']}" + (f"  [{meta}]" if meta else ""))
+        if base and t.get("path"):
+            lines.append(f"    {base}{t['path']}")
+    return "\n".join(lines)
+
+
 def episode_link(stamp):
     """The listening page, anchored at this episode — not a 60MB download link."""
     return f"{CFG['feed']['base_url'].rstrip('/')}/#{stamp}"
@@ -759,6 +907,10 @@ def main():
         blocked = recent_keys(ledger, days)
         log.info("ledger: %d stories blocked from the last %sd", len(blocked), days)
         weather = fetch_weather()
+        tcfg = CFG.get("torrents") or {}
+        tledger, tdays = OUT / "torrents-seen.jsonl", tcfg.get("history_days", 30)
+        picks = fetch_torrents()
+        fresh_picks = unseen_torrents(picks, tledger, tdays)[: tcfg.get("max_shown", 15)]
         items = collect_items(blocked)
         add_full_text(items)
         build_digest(digest, items, weather)
@@ -767,6 +919,9 @@ def main():
         (OUT / f"{stamp}.title").write_text(title)
         if weather:
             (OUT / f"{stamp}.weather").write_text(json.dumps(weather))
+        if fresh_picks:
+            (OUT / f"{stamp}.torrents").write_text(json.dumps(fresh_picks))
+        remember_torrents(picks, tledger, stamp, tdays)
         (OUT / f"{stamp}.sources").write_text(json.dumps(
             [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
              for i in items]))
@@ -778,7 +933,8 @@ def main():
         write_index(eps)
         wx_line = weather_summary(weather)
         send_mail(title, (f"{wx_line}\n\n" if wx_line else "")
-                  + f"{points}\n\nListen: {episode_link(stamp)}")
+                  + f"{points}\n\nListen: {episode_link(stamp)}"
+                  + torrents_mail(fresh_picks))
         mins = (datetime.now() - started).total_seconds() / 60
         log.info("=== run ok in %.1f min: %d stories, %d with article text, "
                  "%d bullets, %s (%.1f MB, %s) ===",
