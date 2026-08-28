@@ -7,6 +7,15 @@ feeds:
   BBC World: https://feeds.bbci.co.uk/news/world/rss.xml
 
 max_per_feed: 8
+
+# Optional. Opens the episode, the email and the page with a local forecast.
+# Free, no API key, US only (National Weather Service). Omit to skip weather.
+weather:
+  lat: 41.8781
+  lon: -87.6298
+  label: "Chicago, IL"   # omit and the API's own place name is used
+  periods: 4             # today, tonight, and the next couple
+
 bullets: 12          # show-note bullets asked of NotebookLM (also used in the email)
 
 # Stories older than this are dropped, and so are undated ones — a missing date is

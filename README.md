@@ -8,28 +8,30 @@ and publishes the result as a podcast feed plus an email digest.
 
 Each run:
 
-1. Pulls the configured RSS feeds, drops anything older than `max_age_hours`
+1. Fetches the local forecast, which opens the episode, the email and the page.
+2. Pulls the configured RSS feeds, drops anything older than `max_age_hours`
    (and anything undated), skips stories already aired in the last
    `ledger_days`, and folds near-duplicate headlines together — so a story
    three outlets ran gets covered once, and is treated as one of the day's big
    ones.
-2. Fetches the full article text for the top stories (not just the RSS blurb)
+3. Fetches the full article text for the top stories (not just the RSS blurb)
    so the hosts have something to actually talk about. Pages that extract to
    nothing — a Reddit comment thread has no article body — are replaced by
    reaching further down the ranking, up to `full_text.max_attempts`.
-3. Builds a markdown digest, keeping yesterday's alongside it as a second
+4. Builds a markdown digest, keeping yesterday's alongside it as a second
    source so the episode leads with what has *changed*.
-4. Creates a fresh NotebookLM notebook, uploads both, and generates an audio
+5. Creates a fresh NotebookLM notebook, uploads both, and generates an audio
    overview (the notebook is deleted afterwards, even on failure).
-5. Downloads the episode, asks NotebookLM for six bullet-point show notes and
-   a headline title naming the day's biggest stories.
-6. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
-   tags) and `index.html` — a listening page with a player, show notes, and a
-   collapsed list of every source story linked back to the original article,
-   grouped by outlet. Both are plain files for any static web server; the page
-   loads no external assets, and story links are escaped and restricted to
-   http(s), since feed contents are untrusted.
-7. Emails the bullet points and episode link — or the error, if the run failed.
+6. Downloads the episode, asks NotebookLM for `bullets` show notes and a
+   headline title naming the day's biggest stories.
+7. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
+   tags) and `index.html` — a listening page with a player, the forecast, show
+   notes, and a collapsed list of every source story linked back to the
+   original article, grouped by outlet. Both are plain files for any static web
+   server; the page loads no external assets, and story links are escaped and
+   restricted to http(s), since feed contents are untrusted.
+8. Emails the forecast, the bullet points and the episode link — or the error,
+   if the run failed.
 
 Designed to run on a schedule in Docker on a Synology NAS, but nothing about it
 is Synology-specific.
@@ -92,7 +94,7 @@ The compose file mounts two host paths — adjust them to your layout:
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
 - the output dir → `/data`: `config.yaml`, episodes (`.m4a` plus `.txt` show
-  notes, `.title` and `.sources` sidecars), `digest.md`,
+  notes, `.title`, `.sources` and `.weather` sidecars), `digest.md`,
   `digest-yesterday.md`, `aired.jsonl`, `feed.xml`, `index.html`,
   `briefing.log`
 

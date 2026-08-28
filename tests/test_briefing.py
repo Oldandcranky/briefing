@@ -269,6 +269,76 @@ check("bounded when everything fails",
 b.trafilatura = real_traf
 b.CFG["max_per_feed"] = 3
 
+section("weather")
+import io, urllib.request as _u  # noqa: E402
+POINTS = {"properties": {"forecast": "https://api.weather.gov/f",
+                         "relativeLocation": {"properties": {"city": "Huntley", "state": "IL"}}}}
+FCAST = {"properties": {"periods": [
+    {"name": "Today", "temperature": 81, "temperatureUnit": "F", "isDaytime": True,
+     "windSpeed": "0 to 5 mph", "windDirection": "SSW", "shortForecast": "Patchy Fog then Sunny",
+     "probabilityOfPrecipitation": {"value": None}, "detailedForecast": "Patchy fog before 8am."},
+    {"name": "Tonight", "temperature": 60, "temperatureUnit": "F", "isDaytime": False,
+     "windSpeed": "5 mph", "windDirection": "SSW", "shortForecast": "Partly Cloudy",
+     "probabilityOfPrecipitation": {"value": 0}, "detailedForecast": "Partly cloudy."},
+    {"name": "Saturday", "temperature": 79, "temperatureUnit": "F", "isDaytime": True,
+     "windSpeed": "5 to 10 mph", "windDirection": "S", "shortForecast": "Slight Chance Rain",
+     "probabilityOfPrecipitation": {"value": 18}, "detailedForecast": "Showers after 4pm."}]}}
+
+class FakeResp(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+real_urlopen = _u.urlopen
+def fake_urlopen(req, timeout=None):
+    url = req.full_url if hasattr(req, "full_url") else str(req)
+    return FakeResp(json.dumps(POINTS if "/points/" in url else FCAST).encode())
+
+b.CFG["weather"] = {"lat": 42.1681, "lon": -88.4281, "periods": 3}
+_u.urlopen = fake_urlopen
+w = b.fetch_weather()
+check("forecast parsed", w and len(w["periods"]) == 3, f"{w and len(w['periods'])}")
+check("label falls back to the API location", w["label"] == "Huntley, IL", w["label"])
+check("null precip becomes zero", w["periods"][0]["precip"] == 0)
+check("wind joins speed and direction", w["periods"][0]["wind"] == "0 to 5 mph SSW",
+      w["periods"][0]["wind"])
+check("explicit label wins", (b.CFG["weather"].update({"label": "Huntley, IL 60142"})
+                              or b.fetch_weather()["label"]) == "Huntley, IL 60142")
+w = b.fetch_weather()
+check("summary line reads cleanly",
+      b.weather_summary(w) == "Huntley, IL 60142 \u2014 today: Patchy Fog then Sunny, 81\u00b0F",
+      b.weather_summary(w))
+
+def boom_urlopen(req, timeout=None): raise OSError("network down")
+_u.urlopen = boom_urlopen
+check("a dead API is not fatal", b.fetch_weather() is None)
+_u.urlopen = fake_urlopen
+saved_wx = b.CFG.pop("weather")
+check("unconfigured means no weather", b.fetch_weather() is None)
+b.CFG["weather"] = saved_wx
+
+dpath = OUT / "digest-wx.md"
+b.build_digest(dpath, [{"title": "A story", "feed": "Alpha News", "feeds": ["Alpha News"],
+                        "text": "", "summary": "s", "link": "https://a.example/1",
+                        "pos": 0, "fidx": 0, "key": "url:a.example/1"}], b.fetch_weather())
+dtext = dpath.read_text()
+check("digest leads with weather, before the news",
+      dtext.index("## Weather") < dtext.index("## News") < dtext.index("A story"))
+check("digest names the location", "Huntley, IL 60142" in dtext)
+check("digest carries the detail line", "Patchy fog before 8am." in dtext)
+
+esc = __import__("html").escape
+blk = b.weather_block(b.fetch_weather(), esc)
+check("page block renders the temperature", "81<sup>&deg;F</sup>" in blk, blk[:90])
+check("page block shows later periods", blk.count("wx-next") == 2)
+check("page block flags precipitation", "18% precip" not in blk and "wx-strip" in blk)
+check("no weather means no block", b.weather_block(None, esc) == "")
+hostile = {"label": "<script>x</script>", "periods": [
+    {"name": "Today", "temp": 1, "unit": "F", "day": True, "wind": "", "short": "<b>bad</b>",
+     "precip": 5, "detail": "d"}]}
+hb = b.weather_block(hostile, esc)
+check("weather text is escaped", "<script>" not in hb and "&lt;script&gt;" in hb)
+_u.urlopen = real_urlopen
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],

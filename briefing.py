@@ -35,6 +35,9 @@ CFG_PATH = Path(os.environ.get("BRIEFING_CONFIG", "/data/config.yaml"))
 CFG = yaml.safe_load(CFG_PATH.read_text())
 UA = "Mozilla/5.0 (compatible; briefing/1.0)"
 
+WEATHER_NOTE = (" Open with the local weather outlook at the top of the digest \u2014 a"
+                " sentence or two, conversational, then move into the news.")
+
 # Appended to the audio prompt when yesterday's digest is attached as a second source.
 DELTA_NOTE = (" Yesterday's digest is attached as a second source: lead with what is new or "
               "has moved since then, and don't re-tell stories that haven't changed.")
@@ -329,8 +332,63 @@ def add_full_text(items):
              got, count, attempts, (datetime.now() - t0).total_seconds())
 
 
-def build_digest(path, items):
-    lines = [f"# News digest {datetime.now():%A %d %B %Y}"]
+
+def fetch_weather():
+    """Today's outlook from the National Weather Service. No API key; US only.
+
+    Never fatal: a missing forecast costs the weather section, not the briefing.
+    """
+    cfg = CFG.get("weather") or {}
+    if not cfg.get("lat") or not cfg.get("lon"):
+        return None
+
+    def get(url):
+        req = urllib.request.Request(url, headers={
+            "User-Agent": cfg.get("user_agent", UA), "Accept": "application/geo+json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+
+    try:
+        pt = get(f"https://api.weather.gov/points/{cfg['lat']},{cfg['lon']}")["properties"]
+        periods = get(pt["forecast"])["properties"]["periods"][: cfg.get("periods", 4)]
+        where = pt["relativeLocation"]["properties"]
+        out = {"label": cfg.get("label") or f"{where['city']}, {where['state']}",
+               "periods": [{"name": x["name"], "temp": x["temperature"],
+                            "unit": x["temperatureUnit"], "day": x["isDaytime"],
+                            "wind": f"{x['windSpeed']} {x['windDirection']}".strip(),
+                            "short": x["shortForecast"],
+                            "precip": (x.get("probabilityOfPrecipitation") or {}).get("value") or 0,
+                            "detail": x["detailedForecast"]} for x in periods]}
+        now = out["periods"][0]
+        log.info("weather: %s — %s, %s%s", out["label"], now["short"], now["temp"], now["unit"])
+        return out
+    except Exception as ex:
+        log.warning("weather unavailable: %s", type(ex).__name__)
+        return None
+
+
+def weather_summary(w):
+    """One line for the email subject area and the run log."""
+    if not w:
+        return ""
+    p = w["periods"][0]
+    bits = f"{p['short']}, {p['temp']}\u00b0{p['unit']}"
+    if p["precip"]:
+        bits += f", {p['precip']}% precip"
+    return f"{w['label']} \u2014 {p['name'].lower()}: {bits}"
+
+
+def build_digest(path, items, weather=None):
+    lines = [f"# Briefing for {datetime.now():%A %d %B %Y}"]
+    if weather:
+        # First in the digest so the hosts open with it.
+        lines.append(f"\n## Weather for {weather['label']}\n")
+        for p in weather["periods"]:
+            rain = f", {p['precip']}% chance of precipitation" if p["precip"] else ""
+            wind = f" Wind {p['wind']}." if p["wind"] else ""
+            lines.append(f"- {p['name']}: {p['short']}, {p['temp']}\u00b0{p['unit']}{rain}.{wind}")
+        lines.append(f"\n{weather['periods'][0]['detail']}\n")
+        lines.append("\n## News\n")
     by_feed = {}
     for i in items:
         by_feed.setdefault(i["feed"], []).append(i)
@@ -376,7 +434,7 @@ def episode_title(nb, stamp, points):
     return f"{stamp} · {title}" if title else f"Briefing {stamp}"
 
 
-def make_episode(digest, prev, audio_path, stamp):
+def make_episode(digest, prev, audio_path, stamp, weather=None):
     """Fresh notebook per run so there's never a stale audio artifact. Deleted after."""
     nb = jparse(run("create", f"briefing-{stamp}", "--json"))["notebook"]["id"]
     log.info("notebook %s", nb)
@@ -390,7 +448,9 @@ def make_episode(digest, prev, audio_path, stamp):
         a = CFG["audio"]
         t0 = datetime.now()
         log.info("generating audio (format=%s length=%s)", a["format"], a["length"])
-        run("generate", "audio", random.choice(a["prompts"]) + (DELTA_NOTE if prev else ""),
+        prompt = (random.choice(a["prompts"]) + (WEATHER_NOTE if weather else "")
+                  + (DELTA_NOTE if prev else ""))
+        run("generate", "audio", prompt,
             "-n", nb, "--format", a["format"],
             "--length", a["length"], "--wait", "--timeout", "1500", "--retry", "3")
         log.info("audio generated in %ds", (datetime.now() - t0).seconds)
@@ -414,7 +474,7 @@ def make_episode(digest, prev, audio_path, stamp):
 
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
-        for ext in (".txt", ".title", ".sources"):
+        for ext in (".txt", ".title", ".sources", ".weather"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
@@ -442,14 +502,20 @@ def episodes():
     out = []
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
         notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
+        wx = f.with_suffix(".weather")
         secs = duration(f)
         try:
             sources = json.loads(srcs.read_text()) if srcs.exists() else []
         except json.JSONDecodeError:
             log.warning("unreadable sources sidecar: %s", srcs.name)
             sources = []
+        try:
+            weather = json.loads(wx.read_text()) if wx.exists() else None
+        except json.JSONDecodeError:
+            log.warning("unreadable weather sidecar: %s", wx.name)
+            weather = None
         out.append({
-            "sources": sources,
+            "sources": sources, "weather": weather,
             "file": f, "size": f.stat().st_size, "secs": secs,
             "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
             # RSS wants UTC; the page should show the day the episode is named for.
@@ -477,6 +543,24 @@ def write_feed(eps):
         f"<description>{title}</description><language>en-us</language>"
         f"{''.join(items)}</channel></rss>")
     log.info("feed: %d episodes", len(eps))
+
+
+def weather_block(w, esc):
+    """The day's outlook, above the notes. Sidecar-driven, so old episodes keep theirs."""
+    if not w:
+        return ""
+    now, rest = w["periods"][0], w["periods"][1:4]
+    rain = f"<span class=pop>{now['precip']}% precip</span>" if now["precip"] else ""
+    later = "".join(
+        f"<div class=wx-next><b>{esc(p['name'])}</b>"
+        f"<span>{esc(p['short'])}</span>"
+        f"<em>{p['temp']}&deg;{'' if p['day'] else ' low'}</em></div>" for p in rest)
+    return (f"<div class=wx><div class=wx-now>"
+            f"<div class=wx-temp>{now['temp']}<sup>&deg;{esc(now['unit'])}</sup></div>"
+            f"<div class=wx-what><b>{esc(now['short'])}</b>"
+            f"<span>{esc(w['label'])} &middot; {esc(now['name'].lower())}"
+            f"{' &middot; wind ' + esc(now['wind']) if now['wind'] else ''}</span>{rain}</div>"
+            f"</div><div class=wx-strip>{later}</div></div>")
 
 
 def sources_block(sources, esc):
@@ -514,6 +598,7 @@ def write_index(eps):
             f"<h2>{esc(e['title'])}</h2>"
             f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']} · {size}</p>"
             f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
+            + weather_block(e.get("weather"), esc)
             + (f"<ul>{points}</ul>" if points else "")
             + sources_block(e["sources"], esc)
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
@@ -539,6 +624,22 @@ article {{ background:var(--card); border:1px solid var(--line); border-radius:1
 article:target {{ border-color:var(--accent); }}
 h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
+.wx {{ margin:1rem 0 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
+.wx-now {{ display:flex; align-items:center; gap:1rem; padding:.9rem 1.1rem; }}
+.wx-temp {{ font-size:2.1rem; font-weight:600; line-height:1; letter-spacing:-.02em; }}
+.wx-temp sup {{ font-size:.9rem; font-weight:500; top:-.7em; }}
+.wx-what {{ display:flex; flex-direction:column; gap:.15rem; }}
+.wx-what b {{ font-size:1rem; }}
+.wx-what span {{ font-size:.8rem; color:var(--dim); }}
+.pop {{ font-size:.75rem; color:var(--accent); }}
+.wx-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(90px,1fr));
+            border-top:1px solid var(--line); }}
+.wx-next {{ padding:.6rem .8rem; display:flex; flex-direction:column; gap:.1rem;
+           border-right:1px solid var(--line); }}
+.wx-next:last-child {{ border-right:0; }}
+.wx-next b {{ font-size:.76rem; }}
+.wx-next span {{ font-size:.72rem; color:var(--dim); }}
+.wx-next em {{ font-size:.78rem; font-style:normal; color:var(--fg); }}
 audio {{ width:100%; height:38px; }}
 ul {{ margin:1rem 0 0; padding-left:1.15rem; }}
 li {{ margin:.3rem 0; }}
@@ -657,12 +758,15 @@ def main():
         prev = rotate_digest(digest, OUT / "digest-yesterday.md")
         blocked = recent_keys(ledger, days)
         log.info("ledger: %d stories blocked from the last %sd", len(blocked), days)
+        weather = fetch_weather()
         items = collect_items(blocked)
         add_full_text(items)
-        build_digest(digest, items)
-        points, title = make_episode(digest, prev, audio, stamp)
+        build_digest(digest, items, weather)
+        points, title = make_episode(digest, prev, audio, stamp, weather)
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
+        if weather:
+            (OUT / f"{stamp}.weather").write_text(json.dumps(weather))
         (OUT / f"{stamp}.sources").write_text(json.dumps(
             [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
              for i in items]))
@@ -672,7 +776,9 @@ def main():
         eps = episodes()
         write_feed(eps)
         write_index(eps)
-        send_mail(title, f"{points}\n\nListen: {episode_link(stamp)}")
+        wx_line = weather_summary(weather)
+        send_mail(title, (f"{wx_line}\n\n" if wx_line else "")
+                  + f"{points}\n\nListen: {episode_link(stamp)}")
         mins = (datetime.now() - started).total_seconds() / 60
         log.info("=== run ok in %.1f min: %d stories, %d with article text, "
                  "%d bullets, %s (%.1f MB, %s) ===",
