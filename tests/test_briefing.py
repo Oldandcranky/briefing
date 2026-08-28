@@ -725,6 +725,45 @@ blog = (OUT / "briefing.log").read_text()
 check("a feed filtered to nothing warns", "contributed nothing" in blog)
 check("dropped stories are traceable at DEBUG", "drop stale" in blog)
 
+section("logging the new sections")
+import logging as _lg  # noqa: E402
+class Capture(_lg.Handler):
+    def __init__(s): super().__init__(); s.msgs = []
+    def emit(s, r): s.msgs.append((r.levelname, r.getMessage()))
+cap = Capture(); b.log.addHandler(cap)
+
+cap.msgs.clear()
+b.run = lambda *a: json.dumps({"answer": ""})
+b.episode_quote("nb")
+check("an empty quote says why", any("empty answer" in m for _, m in cap.msgs), cap.msgs)
+cap.msgs.clear()
+b.run = lambda *a: json.dumps({"answer": "x" * 400})
+b.episode_quote("nb")
+check("an over-long quote says why", any("too long" in m for _, m in cap.msgs), cap.msgs)
+
+cap.msgs.clear()
+pairs, matched = b.note_links("- Rwandan genocide life sentence: a Dutch court sentenced a man "
+                              "to life over the Rwanda genocide.\n- Unrelated filler note here.",
+                              [{"title": "Dutch court sentences man to life over Rwanda genocide",
+                                "feed": "BBC", "feeds": ["BBC"], "link": "https://b.example/r"}])
+check("note_links reports pairs and a count", len(pairs) == 2 and matched == 1, (len(pairs), matched))
+(OUT / "2026-08-26.sources").write_text(json.dumps(
+    [{"title": "Dutch court sentences man to life over Rwanda genocide",
+      "feed": "BBC World", "feeds": ["BBC World"], "link": "https://bbc.example/rwanda"}]))
+(OUT / "2026-08-26.txt").write_text(
+    "- Rwandan genocide life sentence: a Dutch court sentenced a man to life over the "
+    "Rwanda genocide.\n- Something with no source at all in the list.")
+cap.msgs.clear()
+b.write_index(b.episodes())
+check("match coverage is logged", any("note sources: 1/2" in m for _, m in cap.msgs),
+      [m for _, m in cap.msgs])
+(OUT / "2026-08-26.txt").write_text("- Nothing here resembles any source headline whatsoever.")
+cap.msgs.clear()
+b.write_index(b.episodes())
+check("a total matching collapse warns",
+      any(lv == "WARNING" and "note style" in m for lv, m in cap.msgs), [m for _, m in cap.msgs])
+b.log.removeHandler(cap)
+
 section("prune")
 b.prune()
 check("oldest audio dropped", not (OUT / "2026-08-23.m4a").exists())

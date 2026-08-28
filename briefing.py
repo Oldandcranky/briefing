@@ -557,7 +557,11 @@ def episode_quote(nb):
         return ""
     line = next((l.strip(" \"'*-#") for l in answer.splitlines() if l.strip()), "")
     line = CITE.sub("", line).strip()
-    if not line or len(line) > 220:
+    if not line:
+        log.info("quote: empty answer, skipping the section")
+        return ""
+    if len(line) > 220:
+        log.info("quote: %d chars is too long, skipping: %s...", len(line), line[:70])
         return ""
     log.info("quote: %s", line)
     return line
@@ -747,17 +751,34 @@ def match_source(text, sources):
     return None
 
 
+def note_links(notes, sources):
+    """Pair each note with its source, or None. Returns (pairs, matched count)."""
+    pairs, matched = [], 0
+    for line in notes.splitlines():
+        if not line.strip():
+            continue
+        note = re.sub(r"^([-*•]|\d+[.)])\s*", "", line)
+        src = match_source(note, sources)
+        if src:
+            matched += 1
+        pairs.append((note, src))
+    return pairs, matched
+
+
 def write_index(eps):
     """A plain listening page served alongside feed.xml. No assets, no external requests."""
     esc = html.escape
     cards = []
     for n, e in enumerate(eps):
+        pairs, matched = note_links(e["notes"], e["sources"])
+        if pairs and e is eps[0]:
+            # Notes are NotebookLM's prose; if its phrasing drifts away from
+            # headlines this quietly falls to zero and the icons just stop.
+            log.info("note sources: %d/%d notes linked", matched, len(pairs))
+            if not matched:
+                log.warning("no note matched any source — has the note style changed?")
         rows = []
-        for ln in e["notes"].splitlines():
-            if not ln.strip():
-                continue
-            note = re.sub(r"^([-*•]|\d+[.)])\s*", "", ln)
-            src = match_source(note, e["sources"])
+        for note, src in pairs:
             link = ""
             if src and safe_link(src.get("link", "")):
                 tip = esc(f"{src.get('feed', 'Source')} — {src.get('title', '')}")
@@ -1087,10 +1108,16 @@ def main():
                   + f"\n\n{points}\n\nListen: {link}",
                   email_html(title, points, weather, fresh_picks, link, quote, meta))
         mins = (datetime.now() - started).total_seconds() / 60
-        log.info("=== run ok in %.1f min: %d stories, %d with article text, "
-                 "%d bullets, %s (%.1f MB, %s) ===",
+        # One line describing the whole run: every optional part says whether it
+        # made it in, so a silently absent section is visible without digging.
+        log.info("=== run ok in %.1f min: %d stories, %d with article text, %d bullets, "
+                 "weather %s, %d new picks, quote %s, %s (%.1f MB, %s) ===",
                  mins, len(items), sum(1 for i in items if i["text"]),
-                 len(points.splitlines()), audio.name, audio.stat().st_size / 1e6,
+                 len(points.splitlines()),
+                 "ok" if weather else "MISSING",
+                 len(fresh_picks),
+                 "ok" if quote else "none",
+                 audio.name, audio.stat().st_size / 1e6,
                  next((e["clock"] for e in eps if e["file"] == audio), "?"))
         ping_healthcheck(ok=True)
     except Exception as ex:
