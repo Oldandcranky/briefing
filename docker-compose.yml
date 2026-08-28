@@ -5,6 +5,10 @@ services:
     # No container_name on purpose: this is only ever invoked as
     # `compose run --rm`, which names containers itself. A fixed name just
     # leaves a stopped container lying around, pinned to a stale image.
+    # Everything in .env reaches the container, so adding a new secret (a tracker
+    # cookie, say) needs no change here. Values below still win over the file.
+    env_file:
+      - .env
     environment:
       - TZ=${TZ:-UTC}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
