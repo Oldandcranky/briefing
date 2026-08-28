@@ -699,8 +699,11 @@ def weather_block(w, esc):
             f"</div><div class=wx-strip>{later}</div></div>")
 
 
-def torrents_block(picks, esc):
-    """New listings only. Deliberately absent from the digest — the hosts never see this."""
+def torrents_block(picks, esc, expanded=False):
+    """New listings only. Open on the newest episode; folded away on older ones,
+    where a list of what was new four days ago is just noise.
+    Deliberately absent from the digest — the hosts never see this.
+    """
     if not picks:
         return ""
     base = (CFG.get("torrents") or {}).get("link_base", "").rstrip("/")
@@ -708,14 +711,15 @@ def torrents_block(picks, esc):
     for t in picks:
         href = safe_link(base + t.get("path", "")) if base else ""
         name = esc(t["title"])
-        label = f"<a href='{esc(href)}' target=_blank rel='noopener noreferrer'>{name}</a>" \
-            if href else name
+        label = f"<a href='{esc(href)}' target=_blank rel='noopener noreferrer'>" \
+            f"{name}</a>" if href else name
         meta = " &middot; ".join(x for x in (esc(t["age"]) if t["age"] else "",
                                              f"{t['seeders']} seeders" if t["seeders"] else "") if x)
         rows.append(f"<li>{label}<span class=tmeta>{meta}</span></li>")
     plural = "" if len(picks) == 1 else "s"
-    return (f"<div class=torrents><h3>{len(picks)} new pick{plural}</h3>"
-            f"<ul class=tlist>{''.join(rows)}</ul></div>")
+    return (f"<details class=torrents{' open' if expanded else ''}>"
+            f"<summary>{len(picks)} new pick{plural}</summary>"
+            f"<ul class=tlist>{''.join(rows)}</ul></details>")
 
 
 def sources_block(sources, esc):
@@ -747,17 +751,16 @@ def write_index(eps):
     for n, e in enumerate(eps):
         points = "".join(f"<li>{esc(re.sub(r'^([-*•]|\d+[.)])\s*', '', ln))}</li>"
                          for ln in e["notes"].splitlines() if ln.strip())
-        size = (f"{e['size'] / 1e6:.0f} MB" if e["size"] >= 1e6 else f"{e['size'] / 1e3:.0f} KB")
         cards.append(
             f"<article id='{esc(e['file'].stem)}'>"
             f"<h2>{esc(e['title'])}</h2>"
-            f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']} · {size}</p>"
+            f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']}</p>"
             f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
+            + torrents_block(e.get("torrents"), esc, expanded=(n == 0))
             + weather_block(e.get("weather"), esc)
             + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
             + (f"<ul>{points}</ul>" if points else "")
             + sources_block(e["sources"], esc)
-            + torrents_block(e.get("torrents"), esc)
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
     (OUT / "index.html").write_text(f"""<!doctype html>
 <html lang=en><meta charset=utf-8>
@@ -784,9 +787,12 @@ h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .quote {{ margin:1.1rem 0 0; padding:.15rem 0 .15rem 1rem;
          border-left:3px solid var(--accent); font-style:italic; color:var(--fg);
          font-size:.95rem; line-height:1.5; }}
-.torrents {{ margin-top:1.1rem; padding-top:.9rem; border-top:1px solid var(--line); }}
-.torrents h3 {{ margin:0 0 .5rem; font-size:.72rem; letter-spacing:.09em;
-               text-transform:uppercase; color:var(--dim); font-weight:600; }}
+.torrents {{ margin:1rem 0 0; border:1px solid var(--line); border-radius:8px;
+            padding:.75rem .9rem; }}
+.torrents summary {{ cursor:pointer; font-size:.72rem; letter-spacing:.09em;
+                    text-transform:uppercase; color:var(--dim); font-weight:600; }}
+.torrents summary:focus-visible {{ outline:2px solid var(--accent); outline-offset:3px; }}
+.torrents[open] summary {{ margin-bottom:.6rem; }}
 .tlist {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.4rem; }}
 .tlist li {{ display:flex; flex-direction:column; gap:.1rem; font-size:.86rem;
             word-break:break-word; }}
@@ -835,7 +841,7 @@ into any podcast app.</p>
     log.info("index: %d episodes", len(eps))
 
 
-def email_html(title, points, weather, picks, link, quote=""):
+def email_html(title, points, weather, picks, link, quote="", meta=""):
     """HTML email. Inline styles and tables only — mail clients ignore stylesheets,
     and several strip <style> outright. No images, so nothing is blocked or tracked.
     """
@@ -881,10 +887,10 @@ def email_html(title, points, weather, picks, link, quote=""):
             name = esc(t["title"])
             label = (f'<a href="{esc(href)}" style="color:{ink};text-decoration:none">{name}</a>'
                      if href else name)
-            meta = " &middot; ".join(x for x in (esc(t["age"]),
-                                    f'{t["seeders"]} seeders' if t["seeders"] else "") if x)
+            sub = " &middot; ".join(x for x in (esc(t["age"]),
+                                   f'{t["seeders"]} seeders' if t["seeders"] else "") if x)
             rows.append(f'<li style="margin:0 0 8px;line-height:1.4">{label}'
-                        f'<div style="font-size:12px;color:{dim}">{meta}</div></li>')
+                        f'<div style="font-size:12px;color:{dim}">{sub}</div></li>')
         tor = (f'<div style="border:1px solid {line};border-radius:8px;padding:14px 16px;'
                f'margin:0 0 22px">'
                f'<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;'
@@ -913,7 +919,9 @@ def email_html(title, points, weather, picks, link, quote=""):
             f'sans-serif;color:{ink}">'
             f'<div style="font-size:19px;font-weight:600;line-height:1.3;padding-bottom:18px">'
             f'{esc(title)}</div>'
-            f'{tor}'
+            + (f'<div style="font-size:13px;color:{dim};margin:-12px 0 18px">{esc(meta)}</div>'
+               if meta else '')
+            + f'{tor}'
             f'{wx}'
             f'{quoted}'
             f'<ul style="margin:0;padding-left:19px;font-size:15px;color:{ink}">{bullets}</ul>'
@@ -1057,13 +1065,15 @@ def main():
         eps = episodes()
         write_feed(eps)
         write_index(eps)
+        today = next((e for e in eps if e["file"] == audio), None)
+        meta = f"{today['local']:%A %d %B %Y} · {today['clock']}" if today else ""
         wx_line, link = weather_summary(weather), episode_link(stamp)
         send_mail(title,
                   torrents_mail(fresh_picks).lstrip("\n")
                   + (f"\n\n{wx_line}" if wx_line else "")
                   + (f"\n\n{quote}" if quote else "")
                   + f"\n\n{points}\n\nListen: {link}",
-                  email_html(title, points, weather, fresh_picks, link, quote))
+                  email_html(title, points, weather, fresh_picks, link, quote, meta))
         mins = (datetime.now() - started).total_seconds() / 60
         log.info("=== run ok in %.1f min: %d stories, %d with article text, "
                  "%d bullets, %s (%.1f MB, %s) ===",

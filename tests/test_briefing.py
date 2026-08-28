@@ -609,7 +609,7 @@ src_items = b.collect_items()
 eps = b.episodes()
 b.write_index(eps)
 page = (OUT / "index.html").read_text()
-check("sources are collapsed by default", "<details>" in page and " open>" not in page)
+check("sources are collapsed by default", "<details>" in page)
 check("summary counts stories and feeds", "3 stories from 2 feeds" in page,
       re.search(r"<summary>([^<]*)</summary>", page).group(1) if "<summary>" in page else "none")
 check("story links rendered", "href='https://a.example/lead'" in page)
@@ -633,6 +633,56 @@ check("page quote is escaped", "<script>alert" not in page and "&lt;script&gt;" 
 b.write_index(b.episodes())
 page = (OUT / "index.html").read_text()
 check("no quote sidecar means no quote on the page", "class=quote" not in page)
+
+section("page follows the email's order")
+(OUT / "2026-08-26.torrents").write_text(json.dumps(
+    [{"id": "1", "path": "/t/1", "title": "Newest Pick-TEAM", "age": "1 hour ago",
+      "seeders": 9, "leechers": 0}]))
+(OUT / "2026-08-25.torrents").write_text(json.dumps(
+    [{"id": "2", "path": "/t/2", "title": "Older Pick-TEAM", "age": "3 days ago",
+      "seeders": 4, "leechers": 1}]))
+(OUT / "2026-08-26.quote").write_text("A dry little line.")
+(OUT / "2026-08-26.weather").write_text(json.dumps(
+    {"label": "Huntley, IL", "periods": [
+        {"name": "Today", "temp": 81, "unit": "F", "day": True, "wind": "5 mph SSW",
+         "short": "Sunny", "precip": 0, "detail": "Sunny."},
+        {"name": "Tonight", "temp": 60, "unit": "F", "day": False, "wind": "",
+         "short": "Clear", "precip": 0, "detail": "Clear."}]}))
+b.CFG["torrents"] = {"link_base": "https://tracker.example"}
+b.write_index(b.episodes())
+page = (OUT / "index.html").read_text()
+card = page[page.index("id='2026-08-26'"):page.index("id='2026-08-25'")]
+order = [card.index(x) for x in ("<audio", "Newest Pick-TEAM", "wx-now", "class=quote", "<ul>")]
+check("player, picks, weather, quote, notes — in that order", order == sorted(order), order)
+check("sources stay at the end of the card",
+      card.index("<details><summary>") > card.index("<ul>"))
+check("newest episode's picks are expanded", "<details class=torrents open>" in card)
+older = page[page.index("id='2026-08-25'"):]
+check("older episode's picks are collapsed",
+      "<details class=torrents>" in older and "torrents open" not in older)
+check("size dropped from the meta line",
+      " MB</p>" not in page and re.search(r"class=meta>[^<]*\u00b7 00:", page) is not None,
+      re.search(r"<p class=meta>[^<]*</p>", page).group(0))
+b.CFG.pop("torrents")
+for f in ("2026-08-26.torrents", "2026-08-25.torrents", "2026-08-26.quote",
+          "2026-08-26.weather"):
+    (OUT / f).unlink(missing_ok=True)
+
+mm = b.email_html("T", "- One story.", None, [], "https://e.com/", "",
+                  "Friday 28 August 2026 \u00b7 00:36:25")
+check("email carries the same meta line", "Friday 28 August 2026" in mm and "00:36:25" in mm)
+check("email meta omits the size", " MB" not in mm)
+check("no meta means no meta line",
+      "Friday" not in b.email_html("T", "- x", None, [], "https://e.com/", "", ""))
+# The picks loop once used a local named `meta`, quietly overwriting the parameter,
+# so the header showed the last torrent's seeder count instead of the date.
+both = b.email_html("T", "- One story.", None,
+                    [{"id": "1", "path": "/t/1", "title": "P-TEAM", "age": "4.5 days ago",
+                      "seeders": 3149, "leechers": 2}],
+                    "https://e.com/", "", "Friday 28 August 2026 \u00b7 00:36:25")
+check("picks do not clobber the meta line",
+      "Friday 28 August 2026" in both and "3149 seeders</div></li>" in both,
+      re.search(r"margin:-12px[^>]*>([^<]*)<", both).group(1))
 
 section("untrusted feed input")
 check("javascript url rejected", b.safe_link("javascript:alert(1)") == "")
