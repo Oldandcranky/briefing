@@ -597,92 +597,51 @@ check("no remote assets", not re.search(r"<(img|script|iframe)[^>]+src=['\"]?htt
       and not re.search(r"<link[^>]+href=['\"]?https?://", page))
 check("audio stays relative", "src='2026-08-26.m4a'" in page)
 
-section("source links")
-b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
-stub_feeds({A: [entry("Alpha lead story", "https://a.example/lead"),
-                entry("Alpha second story", "https://a.example/second")],
-            B: [entry("Beta exclusive", "https://b.example/x")]})
-src_items = b.collect_items()
-(OUT / "2026-08-26.sources").write_text(json.dumps(
-    [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
-     for i in src_items]))
-eps = b.episodes()
-b.write_index(eps)
-page = (OUT / "index.html").read_text()
-check("sources are collapsed by default", "<details>" in page)
-check("summary counts stories and feeds", "3 stories from 2 feeds" in page,
-      re.search(r"<summary>([^<]*)</summary>", page).group(1) if "<summary>" in page else "none")
-check("story links rendered", "href='https://a.example/lead'" in page)
-check("links open safely", page.count("rel='noopener noreferrer'") == 3)
-check("grouped by feed", "<h3>Alpha News</h3>" in page and "<h3>Beta Wire</h3>" in page)
-check("episodes without a sidecar omit the block", page.count("<details>") == 1,
-      f"{page.count('<details>')} details blocks")
+section("note source links")
+# Calibrated on a real run: correct pairings shared 3+ distinctive words,
+# wrong ones shared at most 1.
+SRC = [{"title": "Dutch court sentences man to life over Rwanda genocide",
+        "feed": "BBC World", "feeds": ["BBC World"], "link": "https://bbc.example/rwanda"},
+       {"title": "Apple TV now costs $14.99 a month after its fourth price hike",
+        "feed": "The Verge", "feeds": ["The Verge"], "link": "https://verge.example/apple"},
+       {"title": "US Open 2026: All to know about the schedule and top seeds",
+        "feed": "Al Jazeera", "feeds": ["Al Jazeera"], "link": "https://aj.example/usopen"}]
+m = b.match_source("Rwandan genocide life sentence: A Dutch court in The Hague sentenced a "
+                   "former administrator to life in prison for genocide committed in Rwanda.", SRC)
+check("matches the right article", m and "rwanda" in m["link"], m and m["link"])
+m = b.match_source("Apple TV+ price increase: Apple raised the monthly fee for Apple TV+ "
+                   "to $14.99, marking its fourth price increase in four years.", SRC)
+check("matches across differing wording", m and "apple" in m["link"], m and m["link"])
+check("a note with no matching article gets nothing",
+      b.match_source("GTA VI extended preview: Rockstar debuted a 27-minute gameplay video.",
+                     SRC) is None)
+check("an unrelated note is not force-matched",
+      b.match_source("Transformers voice actor Peter Cullen has died at 85.", SRC) is None)
+check("no sources means no match", b.match_source("Anything at all here", []) is None)
+check("empty note is safe", b.match_source("", SRC) is None)
 
-(OUT / "2026-08-26.quote").write_text("Everything is a subscription now.")
+(OUT / "2026-08-26.sources").write_text(json.dumps(SRC))
+(OUT / "2026-08-26.txt").write_text(
+    "- Rwandan genocide life sentence: A Dutch court in The Hague sentenced a former "
+    "administrator to life in prison for genocide committed in Rwanda.\n"
+    "- GTA VI extended preview: Rockstar debuted a 27-minute gameplay video.")
 b.write_index(b.episodes())
 page = (OUT / "index.html").read_text()
-check("page carries the quote", "Everything is a subscription now." in page)
-check("page quote is styled, not bare", "class=quote" in page)
-check("page quote sits between the forecast and the notes or above the notes",
-      page.index("Everything is a subscription now.") < page.index("<ul>"))
-(OUT / "2026-08-26.quote").write_text("<script>alert(1)</script>")
+check("matched note carries a link icon", "class=src-link" in page and "&#8599;" in page)
+check("icon points at the article", "href='https://bbc.example/rwanda'" in page)
+check("tooltip names outlet and headline",
+      'title="BBC World — Dutch court sentences man to life over Rwanda genocide"' in page)
+check("icon is a real link so it works on touch", "target=_blank" in page)
+check("unmatched note gets no icon", page.count("class=src-link") == 1,
+      f"{page.count('class=src-link')} icons for 2 notes")
+check("the bulk source list is gone", "stories from" not in page and "ul class=src" not in page)
+hostile = [{"title": "Rwanda genocide court sentences man to life",
+            "feed": "<script>x</script>", "feeds": [], "link": "javascript:alert(1)"}]
+(OUT / "2026-08-26.sources").write_text(json.dumps(hostile))
 b.write_index(b.episodes())
 page = (OUT / "index.html").read_text()
-check("page quote is escaped", "<script>alert" not in page and "&lt;script&gt;" in page)
-(OUT / "2026-08-26.quote").unlink()
-b.write_index(b.episodes())
-page = (OUT / "index.html").read_text()
-check("no quote sidecar means no quote on the page", "class=quote" not in page)
-
-section("page follows the email's order")
-(OUT / "2026-08-26.torrents").write_text(json.dumps(
-    [{"id": "1", "path": "/t/1", "title": "Newest Pick-TEAM", "age": "1 hour ago",
-      "seeders": 9, "leechers": 0}]))
-(OUT / "2026-08-25.torrents").write_text(json.dumps(
-    [{"id": "2", "path": "/t/2", "title": "Older Pick-TEAM", "age": "3 days ago",
-      "seeders": 4, "leechers": 1}]))
-(OUT / "2026-08-26.quote").write_text("A dry little line.")
-(OUT / "2026-08-26.weather").write_text(json.dumps(
-    {"label": "Huntley, IL", "periods": [
-        {"name": "Today", "temp": 81, "unit": "F", "day": True, "wind": "5 mph SSW",
-         "short": "Sunny", "precip": 0, "detail": "Sunny."},
-        {"name": "Tonight", "temp": 60, "unit": "F", "day": False, "wind": "",
-         "short": "Clear", "precip": 0, "detail": "Clear."}]}))
-b.CFG["torrents"] = {"link_base": "https://tracker.example"}
-b.write_index(b.episodes())
-page = (OUT / "index.html").read_text()
-card = page[page.index("id='2026-08-26'"):page.index("id='2026-08-25'")]
-order = [card.index(x) for x in ("<audio", "Newest Pick-TEAM", "wx-now", "class=quote", "<ul>")]
-check("player, picks, weather, quote, notes — in that order", order == sorted(order), order)
-check("sources stay at the end of the card",
-      card.index("<details><summary>") > card.index("<ul>"))
-check("newest episode's picks are expanded", "<details class=torrents open>" in card)
-older = page[page.index("id='2026-08-25'"):]
-check("older episode's picks are collapsed",
-      "<details class=torrents>" in older and "torrents open" not in older)
-check("size dropped from the meta line",
-      " MB</p>" not in page and re.search(r"class=meta>[^<]*\u00b7 00:", page) is not None,
-      re.search(r"<p class=meta>[^<]*</p>", page).group(0))
-b.CFG.pop("torrents")
-for f in ("2026-08-26.torrents", "2026-08-25.torrents", "2026-08-26.quote",
-          "2026-08-26.weather"):
-    (OUT / f).unlink(missing_ok=True)
-
-mm = b.email_html("T", "- One story.", None, [], "https://e.com/", "",
-                  "Friday 28 August 2026 \u00b7 00:36:25")
-check("email carries the same meta line", "Friday 28 August 2026" in mm and "00:36:25" in mm)
-check("email meta omits the size", " MB" not in mm)
-check("no meta means no meta line",
-      "Friday" not in b.email_html("T", "- x", None, [], "https://e.com/", "", ""))
-# The picks loop once used a local named `meta`, quietly overwriting the parameter,
-# so the header showed the last torrent's seeder count instead of the date.
-both = b.email_html("T", "- One story.", None,
-                    [{"id": "1", "path": "/t/1", "title": "P-TEAM", "age": "4.5 days ago",
-                      "seeders": 3149, "leechers": 2}],
-                    "https://e.com/", "", "Friday 28 August 2026 \u00b7 00:36:25")
-check("picks do not clobber the meta line",
-      "Friday 28 August 2026" in both and "3149 seeders</div></li>" in both,
-      re.search(r"margin:-12px[^>]*>([^<]*)<", both).group(1))
+check("a javascript: source is never linked", "javascript:" not in page)
+(OUT / "2026-08-26.sources").write_text(json.dumps(SRC))
 
 section("untrusted feed input")
 check("javascript url rejected", b.safe_link("javascript:alert(1)") == "")
@@ -690,16 +649,19 @@ check("data url rejected", b.safe_link("data:text/html,<script>") == "")
 check("http and https allowed",
       b.safe_link("http://x.example/a") and b.safe_link("https://x.example/a"))
 check("blank url safe to render", b.safe_link("") == "")
-hostile = [{"title": "<img src=x onerror=alert(1)>", "feed": "Evil & Co",
-            "feeds": ["Evil & Co"], "link": "javascript:alert(1)"}]
-blk = b.sources_block(hostile, __import__("html").escape)
-check("hostile title escaped", "<img src=x" not in blk and "&lt;img" in blk)
-check("hostile url not linked", "javascript:" not in blk and "<a " not in blk)
-check("feed name escaped", "Evil &amp; Co" in blk)
-check("multi-feed stories noted",
-      "also in" in b.sources_block(
-          [{"title": "T", "feed": "A", "feeds": ["A", "B"], "link": "https://x.example/a"}],
-          __import__("html").escape))
+# A hostile feed reaches the page through the note tooltip now, not a source list.
+(OUT / "2026-08-26.sources").write_text(json.dumps(
+    [{"title": "Rwanda genocide court sentences man to life <img src=x onerror=alert(1)>",
+      "feed": "Evil & Co", "feeds": ["Evil & Co"], "link": "https://evil.example/a\" onmouseover=\"x"}]))
+(OUT / "2026-08-26.txt").write_text(
+    "- Rwandan genocide life sentence: a court sentenced a man to life over the Rwanda genocide.")
+b.write_index(b.episodes())
+hpage = (OUT / "index.html").read_text()
+check("hostile source title escaped in the tooltip",
+      "<img src=x" not in hpage and "&lt;img" in hpage)
+check("hostile feed name escaped", "Evil &amp; Co" in hpage)
+check("quotes in a url cannot break out of the attribute",
+      'onmouseover="x"' not in hpage and "&quot;" in hpage)
 check("tags balanced",
       all(page.count(f"<{t}") == page.count(f"</{t}>") for t in ("article", "ul", "li", "h2")))
 

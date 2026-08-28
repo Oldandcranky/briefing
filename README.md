@@ -29,10 +29,12 @@ Each run:
    or over-long answer is dropped rather than printed.
 7. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
    tags) and `index.html` — a listening page following the same order as the
-   email (player, new picks, forecast, quote, notes) with a collapsed list of
-   every source story linked back to the original article, grouped by outlet.
-   Picks are expanded on the newest episode only; on older ones they fold away,
-   since what was new four days ago no longer is. Both are plain files for any static web
+   email: player, new picks, forecast, quote, notes. Each note carries a small
+   ↗ to the article it most likely came from; NotebookLM reports no provenance,
+   so that link is inferred from shared distinctive words and is omitted rather
+   than guessed when the match is weak. Picks are expanded on the newest
+   episode only; on older ones they fold away, since what was new four days ago
+   no longer is. Both are plain files for any static web
    server; the page loads no external assets, and story links are escaped and
    restricted to http(s), since feed contents are untrusted.
 8. Emails an HTML briefing — new picks, the forecast, the quote, the notes and

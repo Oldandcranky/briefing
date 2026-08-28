@@ -722,26 +722,29 @@ def torrents_block(picks, esc, expanded=False):
             f"<ul class=tlist>{''.join(rows)}</ul></details>")
 
 
-def sources_block(sources, esc):
-    """Every story that went into the episode, collapsed so it doesn't bury the notes."""
-    if not sources:
-        return ""
-    by_feed = {}
-    for s in sources:
-        by_feed.setdefault(s.get("feed", "Other"), []).append(s)
-    groups = []
-    for feed, group in by_feed.items():
-        rows = []
-        for s in group:
-            title, href = esc(s.get("title", "")), safe_link(s.get("link", ""))
-            also = [f for f in s.get("feeds", [])[1:]]
-            tag = f" <span class=also>also in {esc(', '.join(also))}</span>" if also else ""
-            rows.append(f"<li><a href='{esc(href)}' target=_blank rel='noopener noreferrer'>"
-                        f"{title}</a>{tag}</li>" if href else f"<li>{title}{tag}</li>")
-        groups.append(f"<h3>{esc(feed)}</h3><ul class=src>{''.join(rows)}</ul>")
-    plural = "" if len(by_feed) == 1 else "s"
-    return (f"<details><summary>{len(sources)} stories from "
-            f"{len(by_feed)} feed{plural}</summary>{''.join(groups)}</details>")
+def match_source(text, sources):
+    """The article a show-note most likely came from, or None.
+
+    NotebookLM writes the notes from the whole digest at once and reports no
+    provenance, so this infers it from shared distinctive words. Calibrated on a
+    real run where every correct pairing shared three or more and every wrong one
+    shared at most one: below that, no link beats a confidently wrong link.
+    """
+    kb = keywords(text)
+    if not kb:
+        return None
+    best, best_shared, best_ratio = None, 0, 0.0
+    for src in sources:
+        ks = keywords(src.get("title", ""))
+        if not ks:
+            continue
+        shared = len(kb & ks)
+        ratio = shared / min(len(kb), len(ks))
+        if (shared, ratio) > (best_shared, best_ratio):
+            best, best_shared, best_ratio = src, shared, ratio
+    if best_shared >= 3 and best_ratio >= 0.3:
+        return best
+    return None
 
 
 def write_index(eps):
@@ -749,8 +752,20 @@ def write_index(eps):
     esc = html.escape
     cards = []
     for n, e in enumerate(eps):
-        points = "".join(f"<li>{esc(re.sub(r'^([-*•]|\d+[.)])\s*', '', ln))}</li>"
-                         for ln in e["notes"].splitlines() if ln.strip())
+        rows = []
+        for ln in e["notes"].splitlines():
+            if not ln.strip():
+                continue
+            note = re.sub(r"^([-*•]|\d+[.)])\s*", "", ln)
+            src = match_source(note, e["sources"])
+            link = ""
+            if src and safe_link(src.get("link", "")):
+                tip = esc(f"{src.get('feed', 'Source')} — {src.get('title', '')}")
+                link = (f"<a class=src-link href='{esc(safe_link(src['link']))}' "
+                        f"target=_blank rel='noopener noreferrer' "
+                        f"title=\"{tip}\" aria-label=\"{tip}\">&#8599;</a>")
+            rows.append(f"<li>{esc(note)}{link}</li>")
+        points = "".join(rows)
         cards.append(
             f"<article id='{esc(e['file'].stem)}'>"
             f"<h2>{esc(e['title'])}</h2>"
@@ -760,7 +775,6 @@ def write_index(eps):
             + weather_block(e.get("weather"), esc)
             + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
             + (f"<ul>{points}</ul>" if points else "")
-            + sources_block(e["sources"], esc)
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
     (OUT / "index.html").write_text(f"""<!doctype html>
 <html lang=en><meta charset=utf-8>
@@ -784,6 +798,9 @@ article {{ background:var(--card); border:1px solid var(--line); border-radius:1
 article:target {{ border-color:var(--accent); }}
 h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
+.src-link {{ font-size:.72em; text-decoration:none; color:var(--dim);
+            padding-left:.4em; vertical-align:super; }}
+.src-link:hover, .src-link:focus-visible {{ color:var(--accent); }}
 .quote {{ margin:1.1rem 0 0; padding:.15rem 0 .15rem 1rem;
          border-left:3px solid var(--accent); font-style:italic; color:var(--fg);
          font-size:.95rem; line-height:1.5; }}
@@ -818,15 +835,10 @@ ul {{ margin:1rem 0 0; padding-left:1.15rem; }}
 li {{ margin:.3rem 0; }}
 .dl {{ margin:.9rem 0 0; font-size:.82rem; }}
 .dl a {{ color:var(--dim); }}
-details {{ margin-top:1rem; border-top:1px solid var(--line); padding-top:.85rem; }}
-summary {{ cursor:pointer; color:var(--dim); font-size:.82rem; }}
+
 summary:hover {{ color:var(--fg); }}
 details h3 {{ font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
              color:var(--dim); margin:1rem 0 .4rem; font-weight:600; }}
-ul.src {{ margin:0; padding-left:1.15rem; font-size:.9rem; }}
-ul.src li {{ margin:.25rem 0; }}
-ul.src a {{ text-decoration:none; }}
-ul.src a:hover {{ text-decoration:underline; }}
 .also {{ color:var(--dim); font-size:.8rem; }}
 </style>
 <header>
