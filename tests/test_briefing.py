@@ -472,6 +472,38 @@ check("plain text is still built alongside html",
       "html_body" in __import__("inspect").signature(b.send_mail).parameters)
 b.CFG.pop("torrents"); b.CFG.pop("weather")
 
+section("quote of the day")
+b.run = lambda *a: json.dumps({"answer": "Everything is a subscription now [1, 2]."})
+q = b.episode_quote("nb")
+check("quote returned and citations stripped", q == "Everything is a subscription now.", q)
+b.run = lambda *a: json.dumps({"answer": '"Quoted and starred*"'})
+check("wrapping quotes and stars trimmed", "\"" not in b.episode_quote("nb"), b.episode_quote("nb"))
+b.run = lambda *a: json.dumps({"answer": "x" * 400})
+check("an over-long ramble is dropped", b.episode_quote("nb") == "")
+b.run = lambda *a: json.dumps({"answer": ""})
+check("an empty answer is dropped", b.episode_quote("nb") == "")
+def _qboom(*a): raise RuntimeError("ask failed")
+b.run = _qboom
+check("a failed ask costs the quote, not the run", b.episode_quote("nb") == "")
+check("the prompt steers away from the grim stories",
+      all(w in __import__("inspect").getsource(b.episode_quote)
+          for w in ("death", "disaster", "violence", "crime")))
+
+# it reaches both surfaces
+b.CFG["weather"] = {"lat": 1, "lon": 2, "label": "Huntley, IL", "periods": 4}
+_u.urlopen = fake_urlopen
+wxq = b.fetch_weather()
+_u.urlopen = real_urlopen
+mailq = b.email_html("T", "- One story.", wxq, [], "https://e.com/", "A dry little line.")
+check("email carries the quote", "A dry little line." in mailq)
+check("email quote sits between weather and the notes",
+      mailq.index("81&deg;") < mailq.index("A dry little line.") < mailq.index("One story."))
+check("no quote means no quote block", "font-style:italic" not in
+      b.email_html("T", "- One story.", wxq, [], "https://e.com/", ""))
+b.CFG.pop("weather")
+
+check("prune sweeps the quote sidecar", ".quote" in __import__("inspect").getsource(b.prune))
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],
@@ -585,6 +617,22 @@ check("links open safely", page.count("rel='noopener noreferrer'") == 3)
 check("grouped by feed", "<h3>Alpha News</h3>" in page and "<h3>Beta Wire</h3>" in page)
 check("episodes without a sidecar omit the block", page.count("<details>") == 1,
       f"{page.count('<details>')} details blocks")
+
+(OUT / "2026-08-26.quote").write_text("Everything is a subscription now.")
+b.write_index(b.episodes())
+page = (OUT / "index.html").read_text()
+check("page carries the quote", "Everything is a subscription now." in page)
+check("page quote is styled, not bare", "class=quote" in page)
+check("page quote sits between the forecast and the notes or above the notes",
+      page.index("Everything is a subscription now.") < page.index("<ul>"))
+(OUT / "2026-08-26.quote").write_text("<script>alert(1)</script>")
+b.write_index(b.episodes())
+page = (OUT / "index.html").read_text()
+check("page quote is escaped", "<script>alert" not in page and "&lt;script&gt;" in page)
+(OUT / "2026-08-26.quote").unlink()
+b.write_index(b.episodes())
+page = (OUT / "index.html").read_text()
+check("no quote sidecar means no quote on the page", "class=quote" not in page)
 
 section("untrusted feed input")
 check("javascript url rejected", b.safe_link("javascript:alert(1)") == "")

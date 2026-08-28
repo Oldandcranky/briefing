@@ -22,16 +22,20 @@ Each run:
    source so the episode leads with what has *changed*.
 5. Creates a fresh NotebookLM notebook, uploads both, and generates an audio
    overview (the notebook is deleted afterwards, even on failure).
-6. Downloads the episode, asks NotebookLM for `bullets` show notes and a
-   headline title naming the day's biggest stories.
+6. Downloads the episode, then asks NotebookLM for `bullets` show notes, a
+   headline title naming the day's biggest stories, and one wry line for the
+   email and page. That last prompt is steered at the lighter end of the news
+   on purpose — a joke about the day's body count is not a joke — and an empty
+   or over-long answer is dropped rather than printed.
 7. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
    tags) and `index.html` — a listening page with a player, the forecast, show
    notes, and a collapsed list of every source story linked back to the
    original article, grouped by outlet. Both are plain files for any static web
    server; the page loads no external assets, and story links are escaped and
    restricted to http(s), since feed contents are untrusted.
-8. Emails the forecast, the bullet points and the episode link — or the error,
-   if the run failed.
+8. Emails an HTML briefing — new picks, the forecast, the quote, the notes and
+   a link to the episode, in that order — with the plain-text version carried
+   alongside it. Or the error, if the run failed.
 
 An optional `torrents` section fetches a listing page behind a session cookie,
 shows only entries missing from `torrents-seen.jsonl`, and adds them to the
@@ -100,7 +104,8 @@ The compose file mounts two host paths — adjust them to your layout:
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
 - the output dir → `/data`: `config.yaml`, episodes (`.m4a` plus `.txt` show
-  notes, `.title`, `.sources` and `.weather` sidecars), `digest.md`,
+  notes, `.title`, `.sources`, `.weather`, `.torrents` and `.quote`
+  sidecars), `digest.md`,
   `digest-yesterday.md`, `aired.jsonl`, `torrents-seen.jsonl`, `feed.xml`,
   `index.html`, `briefing.log`
 

@@ -541,6 +541,28 @@ def episode_title(nb, stamp, points):
     return f"{stamp} · {title}" if title else f"Briefing {stamp}"
 
 
+def episode_quote(nb):
+    """A wry one-liner for the email. Optional: no quote is better than a bad one.
+
+    Steered at the absurd end of the news on purpose — a joke about the day's
+    body count is not a joke, and the digest always has some of those in it.
+    """
+    try:
+        answer = jparse(run("ask", "One dry, witty line about today's lighter or more absurd "
+                            "stories - at most 25 words. Nothing about death, disaster, "
+                            "violence, crime or illness. No preamble, no quotation marks.",
+                            "-n", nb, "--json")).get("answer", "")
+    except Exception:
+        log.warning("quote ask failed", exc_info=True)
+        return ""
+    line = next((l.strip(" \"'*-#") for l in answer.splitlines() if l.strip()), "")
+    line = CITE.sub("", line).strip()
+    if not line or len(line) > 220:
+        return ""
+    log.info("quote: %s", line)
+    return line
+
+
 def make_episode(digest, prev, audio_path, stamp, weather=None):
     """Fresh notebook per run so there's never a stale audio artifact. Deleted after."""
     nb = jparse(run("create", f"briefing-{stamp}", "--json"))["notebook"]["id"]
@@ -571,7 +593,7 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
         points = run("ask", f"{CFG.get('bullets', 12)} bullet points, one line each, covering "
                      "the most important stories. No preamble.", "-n", nb, "--json")
         points = clean(jparse(points).get("answer", ""))
-        return points, episode_title(nb, stamp, points)
+        return points, episode_title(nb, stamp, points), episode_quote(nb)
     finally:
         try:
             run("delete", "-n", nb, "--yes")
@@ -581,7 +603,7 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
 
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
-        for ext in (".txt", ".title", ".sources", ".weather", ".torrents"):
+        for ext in (".txt", ".title", ".sources", ".weather", ".torrents", ".quote"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
@@ -610,6 +632,7 @@ def episodes():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
         notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
         wx, tor = f.with_suffix(".weather"), f.with_suffix(".torrents")
+        qfile = f.with_suffix(".quote")
         secs = duration(f)
         try:
             sources = json.loads(srcs.read_text()) if srcs.exists() else []
@@ -628,6 +651,7 @@ def episodes():
             torrents = []
         out.append({
             "sources": sources, "weather": weather, "torrents": torrents,
+            "quote": qfile.read_text().strip() if qfile.exists() else "",
             "file": f, "size": f.stat().st_size, "secs": secs,
             "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
             # RSS wants UTC; the page should show the day the episode is named for.
@@ -730,6 +754,7 @@ def write_index(eps):
             f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']} · {size}</p>"
             f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
             + weather_block(e.get("weather"), esc)
+            + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
             + (f"<ul>{points}</ul>" if points else "")
             + sources_block(e["sources"], esc)
             + torrents_block(e.get("torrents"), esc)
@@ -756,6 +781,9 @@ article {{ background:var(--card); border:1px solid var(--line); border-radius:1
 article:target {{ border-color:var(--accent); }}
 h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
+.quote {{ margin:1.1rem 0 0; padding:.15rem 0 .15rem 1rem;
+         border-left:3px solid var(--accent); font-style:italic; color:var(--fg);
+         font-size:.95rem; line-height:1.5; }}
 .torrents {{ margin-top:1.1rem; padding-top:.9rem; border-top:1px solid var(--line); }}
 .torrents h3 {{ margin:0 0 .5rem; font-size:.72rem; letter-spacing:.09em;
                text-transform:uppercase; color:var(--dim); font-weight:600; }}
@@ -807,7 +835,7 @@ into any podcast app.</p>
     log.info("index: %d episodes", len(eps))
 
 
-def email_html(title, points, weather, picks, link):
+def email_html(title, points, weather, picks, link, quote=""):
     """HTML email. Inline styles and tables only — mail clients ignore stylesheets,
     and several strip <style> outright. No images, so nothing is blocked or tracked.
     """
@@ -857,12 +885,21 @@ def email_html(title, points, weather, picks, link):
                                     f'{t["seeders"]} seeders' if t["seeders"] else "") if x)
             rows.append(f'<li style="margin:0 0 8px;line-height:1.4">{label}'
                         f'<div style="font-size:12px;color:{dim}">{meta}</div></li>')
-        tor = (f'<div style="border-top:1px solid {line};margin-top:26px;padding-top:18px">'
+        tor = (f'<div style="border:1px solid {line};border-radius:8px;padding:14px 16px;'
+               f'margin:0 0 22px">'
                f'<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;'
                f'color:{dim};font-weight:600;padding-bottom:10px">'
                f'{len(picks)} new pick{"" if len(picks) == 1 else "s"}</div>'
                f'<ul style="margin:0;padding-left:18px;font-size:14px;color:{ink}">'
                f'{"".join(rows)}</ul></div>')
+
+    quoted = ""
+    if quote:
+        quoted = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                  f'style="margin:0 0 22px"><tr>'
+                  f'<td style="border-left:3px solid {accent};padding:2px 0 2px 14px;'
+                  f'font-size:15px;font-style:italic;line-height:1.5;color:{ink}">'
+                  f'{esc(quote)}</td></tr></table>')
 
     return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
@@ -876,13 +913,14 @@ def email_html(title, points, weather, picks, link):
             f'sans-serif;color:{ink}">'
             f'<div style="font-size:19px;font-weight:600;line-height:1.3;padding-bottom:18px">'
             f'{esc(title)}</div>'
+            f'{tor}'
             f'{wx}'
+            f'{quoted}'
             f'<ul style="margin:0;padding-left:19px;font-size:15px;color:{ink}">{bullets}</ul>'
             f'<div style="padding-top:24px">'
             f'<a href="{esc(link)}" style="background:{accent};color:#fff;text-decoration:none;'
             f'font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;'
             f'display:inline-block">Listen to the episode</a></div>'
-            f'{tor}'
             f'</td></tr></table></td></tr></table></body></html>')
 
 
@@ -1000,9 +1038,11 @@ def main():
         items = collect_items(blocked)
         add_full_text(items)
         build_digest(digest, items, weather)
-        points, title = make_episode(digest, prev, audio, stamp, weather)
+        points, title, quote = make_episode(digest, prev, audio, stamp, weather)
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
+        if quote:
+            (OUT / f"{stamp}.quote").write_text(quote)
         if weather:
             (OUT / f"{stamp}.weather").write_text(json.dumps(weather))
         if fresh_picks:
@@ -1019,9 +1059,11 @@ def main():
         write_index(eps)
         wx_line, link = weather_summary(weather), episode_link(stamp)
         send_mail(title,
-                  (f"{wx_line}\n\n" if wx_line else "") + f"{points}\n\nListen: {link}"
-                  + torrents_mail(fresh_picks),
-                  email_html(title, points, weather, fresh_picks, link))
+                  torrents_mail(fresh_picks).lstrip("\n")
+                  + (f"\n\n{wx_line}" if wx_line else "")
+                  + (f"\n\n{quote}" if quote else "")
+                  + f"\n\n{points}\n\nListen: {link}",
+                  email_html(title, points, weather, fresh_picks, link, quote))
         mins = (datetime.now() - started).total_seconds() / 60
         log.info("=== run ok in %.1f min: %d stories, %d with article text, "
                  "%d bullets, %s (%.1f MB, %s) ===",
