@@ -382,6 +382,27 @@ check("no url configured means no fetch", b.fetch_torrents() == [])
 b.CFG["torrents"] = {"url": "https://tracker.example/t", "cookie_env": "TEST_COOKIE"}
 os.environ.pop("TEST_COOKIE", None)
 check("a missing cookie is survivable, not fatal", b.fetch_torrents() == [])
+# The tracker gzips whether or not you ask, and urllib never decompresses.
+import gzip as _gz, io as _io  # noqa: E402
+class _Resp(_io.BytesIO):
+    def __init__(self, data, enc):
+        super().__init__(data); self.headers = {"Content-Encoding": enc}
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+os.environ["TEST_COOKIE"] = "uid=1; pass=x"
+_real = _u.urlopen
+_u.urlopen = lambda req, timeout=None: _Resp(_gz.compress(FIXTURE.encode()), "gzip")
+check("a gzipped response is decompressed", len(b.fetch_torrents()) == 15,
+      f"{len(b.fetch_torrents())}")
+_u.urlopen = lambda req, timeout=None: _Resp(FIXTURE.encode(), "")
+check("an uncompressed response still works", len(b.fetch_torrents()) == 15)
+_u.urlopen = lambda req, timeout=None: _Resp(b"<html>Please log in</html>", "")
+check("an expired cookie yields nothing rather than raising", b.fetch_torrents() == [])
+def _boom(req, timeout=None): raise OSError("tracker down")
+_u.urlopen = _boom
+check("a dead tracker is not fatal", b.fetch_torrents() == [])
+_u.urlopen = _real
+os.environ.pop("TEST_COOKIE", None)
 
 esc = __import__("html").escape
 b.CFG["torrents"]["link_base"] = "https://tracker.example"

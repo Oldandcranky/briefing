@@ -2,6 +2,7 @@
 """Daily news briefing: RSS -> NotebookLM audio overview -> podcast feed + email."""
 import calendar
 import concurrent.futures as futures
+import gzip
 import hashlib
 import html
 import json
@@ -376,13 +377,17 @@ def fetch_torrents():
         log.warning("torrents: %s is unset, skipping the section", var)
         return []
     try:
-        # No Accept-Encoding: urllib will not decompress what it asks for.
         req = urllib.request.Request(url, headers={
             "Cookie": cookie, "User-Agent": cfg.get("user_agent", BROWSER_UA),
             "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9"})
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip"})
         with urllib.request.urlopen(req, timeout=30) as r:
-            body = r.read().decode("utf-8", "replace")
+            raw, encoding = r.read(), (r.headers.get("Content-Encoding") or "").lower()
+        # urllib never decompresses, and this server gzips whether or not you ask.
+        if encoding == "gzip":
+            raw = gzip.decompress(raw)
+        body = raw.decode("utf-8", "replace")
     except Exception as ex:
         log.warning("torrents unavailable: %s", type(ex).__name__)
         return []
