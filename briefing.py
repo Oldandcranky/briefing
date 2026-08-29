@@ -453,6 +453,46 @@ def remember_torrents(picks, path, stamp, days):
     path.write_text("\n".join(kept) + "\n")
 
 
+ZODIAC = {"aries": "\u2648", "taurus": "\u2649", "gemini": "\u264a", "cancer": "\u264b",
+          "leo": "\u264c", "virgo": "\u264d", "libra": "\u264e", "scorpio": "\u264f",
+          "sagittarius": "\u2650", "capricorn": "\u2651", "aquarius": "\u2652",
+          "pisces": "\u2653"}
+
+
+def first_sentences(text, count=2, limit=320):
+    """Enough to read in passing, not the full page of it."""
+    parts = re.split(r"(?<=[.!?])\s+", " ".join((text or "").split()))
+    out = " ".join(parts[:count]).strip()
+    if len(out) <= limit:
+        return out
+    return out[:limit].rsplit(" ", 1)[0] + "\u2026"
+
+
+def fetch_horoscope():
+    """Today's horoscope for the configured sign. Entertainment, so never fatal."""
+    cfg = CFG.get("horoscope") or {}
+    sign = (cfg.get("sign") or "").strip().lower()
+    if not sign:
+        return None
+    try:
+        req = urllib.request.Request(f"https://ohmanda.com/api/horoscope/{sign}/",
+                                     headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+    except Exception as ex:
+        log.warning("horoscope unavailable: %s", type(ex).__name__)
+        return None
+    text = first_sentences(data.get("horoscope", ""), cfg.get("sentences", 2))
+    if not text:
+        log.info("horoscope: empty answer, skipping the section")
+        return None
+    # The API reports the date it thinks it is; log it so a stale one is visible.
+    out = {"sign": sign.capitalize(), "glyph": ZODIAC.get(sign, ""),
+           "text": text, "date": data.get("date", "")}
+    log.info("horoscope: %s (%s) %s", out["sign"], out["date"] or "undated", text[:70])
+    return out
+
+
 def fetch_weather():
     """Today's outlook from the National Weather Service. No API key; US only.
 
@@ -621,7 +661,7 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
         for ext in (".txt", ".title", ".sources", ".weather", ".torrents", ".quote",
-                    ".extras"):
+                    ".extras", ".horoscope"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
@@ -651,6 +691,7 @@ def episodes():
         notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
         wx, tor = f.with_suffix(".weather"), f.with_suffix(".torrents")
         qfile, extra = f.with_suffix(".quote"), f.with_suffix(".extras")
+        horo = f.with_suffix(".horoscope")
         secs = duration(f)
         try:
             sources = json.loads(srcs.read_text()) if srcs.exists() else []
@@ -671,6 +712,7 @@ def episodes():
             "sources": sources, "weather": weather, "torrents": torrents,
             "quote": qfile.read_text().strip() if qfile.exists() else "",
             "extras": json.loads(extra.read_text()) if extra.exists() else [],
+            "horoscope": json.loads(horo.read_text()) if horo.exists() else None,
             "file": f, "size": f.stat().st_size, "secs": secs,
             "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
             # RSS wants UTC; the page should show the day the episode is named for.
@@ -777,6 +819,14 @@ def blurb(text, title="", limit=160):
     if len(s) <= limit:
         return s
     return s[:limit].rsplit(" ", 1)[0] + "\u2026"
+
+
+def horoscope_block(h, esc):
+    """Under the quote, quieter than the quote. It is not news and should not look like it."""
+    if not h:
+        return ""
+    label = f"{h.get('glyph', '')} {esc(h.get('sign', ''))}".strip()
+    return (f"<p class=horoscope><span class=hsign>{label}</span> {esc(h.get('text', ''))}</p>")
 
 
 def extras_block(extras, esc, expanded=False):
@@ -890,11 +940,12 @@ def write_index(eps):
         cards.append(
             f"<article id='{esc(e['file'].stem)}'>"
             f"<h2>{esc(e['title'])}</h2>"
-            f"<p class=meta>{e['local']:%A %d %B %Y} · {e['clock']}</p>"
+            f"<p class=meta>{e['local']:%A, %B} {e['local'].day} · {e['clock']}</p>"
             f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
             + torrents_block(e.get("torrents"), esc, expanded=(n == 0))
             + weather_block(e.get("weather"), esc)
             + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
+            + horoscope_block(e.get("horoscope"), esc)
             + (f"<ul>{points}</ul>" if points else "")
             + extras_block(e.get("extras"), esc, expanded=(n == 0))
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
@@ -923,6 +974,9 @@ h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .src-link {{ font-size:.72em; text-decoration:none; color:var(--dim);
             padding-left:.4em; vertical-align:super; }}
 .src-link:hover, .src-link:focus-visible {{ color:var(--accent); }}
+.horoscope {{ margin:.7rem 0 0; font-style:italic; font-size:.88rem;
+              line-height:1.5; color:var(--dim); }}
+.hsign {{ font-style:normal; font-weight:600; color:var(--accent); padding-right:.3em; }}
 .quote {{ margin:1.1rem 0 0; padding:.15rem 0 .15rem 1rem;
          border-left:3px solid var(--accent); font-style:italic; color:var(--fg);
          font-size:.95rem; line-height:1.5; }}
@@ -979,7 +1033,8 @@ into any podcast app.</p>
     log.info("index: %d episodes", len(eps))
 
 
-def email_html(title, points, weather, picks, link, quote="", meta="", extras=None):
+def email_html(title, points, weather, picks, link, quote="", meta="", extras=None,
+               horoscope=None):
     """HTML email. Inline styles and tables only — mail clients ignore stylesheets,
     and several strip <style> outright. No images, so nothing is blocked or tracked.
     """
@@ -1045,6 +1100,15 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
                   f'font-size:15px;font-style:italic;line-height:1.5;color:{ink}">'
                   f'{esc(quote)}</td></tr></table>')
 
+    horo_html = ""
+    if horoscope:
+        label = f"{horoscope.get('glyph', '')} {esc(horoscope.get('sign', ''))}".strip()
+        horo_html = (f'<div style="margin:0 0 22px;font-size:14px;font-style:italic;'
+                     f'line-height:1.5;color:{dim}">'
+                     f'<span style="font-style:normal;font-weight:600;color:{accent};'
+                     f'padding-right:5px">{label}</span>'
+                     f'{esc(horoscope.get("text", ""))}</div>')
+
     extra_html = ""
     if extras:
         by_feed = {}
@@ -1092,6 +1156,7 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
             + f'{tor}'
             f'{wx}'
             f'{quoted}'
+            f'{horo_html}'
             f'<ul style="margin:0;padding-left:19px;font-size:15px;color:{ink}">{bullets}</ul>'
             f'{extra_html}'
             f'<div style="padding-top:24px">'
@@ -1227,6 +1292,7 @@ def main():
         blocked = recent_keys(ledger, days)
         log.info("ledger: %d stories blocked from the last %sd", len(blocked), days)
         weather = fetch_weather()
+        horoscope = fetch_horoscope()
         tcfg = CFG.get("torrents") or {}
         tledger, tdays = OUT / "torrents-seen.jsonl", tcfg.get("history_days", 30)
         picks = fetch_torrents()
@@ -1256,6 +1322,8 @@ def main():
             (OUT / f"{stamp}.quote").write_text(quote)
         if weather:
             (OUT / f"{stamp}.weather").write_text(json.dumps(weather))
+        if horoscope:
+            (OUT / f"{stamp}.horoscope").write_text(json.dumps(horoscope))
         if fresh_picks:
             (OUT / f"{stamp}.torrents").write_text(json.dumps(fresh_picks))
         remember_torrents(picks, tledger, stamp, tdays)
@@ -1279,16 +1347,21 @@ def main():
         write_feed(eps)
         write_index(eps)
         today = next((e for e in eps if e["file"] == audio), None)
-        meta = f"{today['local']:%A %d %B %Y} · {today['clock']}" if today else ""
+        # The year lives in the subject line, where it sorts; here it is clutter.
+        meta = (f"{today['local']:%A, %B} {today['local'].day} \u00b7 {today['clock']}"
+                if today else "")
         wx_line, link = weather_summary(weather), episode_link(stamp)
         send_mail(title,
                   torrents_mail(fresh_picks).lstrip("\n")
                   + (f"\n\n{wx_line}" if wx_line else "")
                   + (f"\n\n{quote}" if quote else "")
+                  + (f"\n\n{horoscope['sign']}: {horoscope['text']}"
+                     if horoscope else "")
                   + f"\n\n{points}"
                   + extras_mail(extras)
                   + f"\n\nListen: {link}",
-                  email_html(title, points, weather, fresh_picks, link, quote, meta, extras))
+                  email_html(title, points, weather, fresh_picks, link, quote, meta, extras,
+                             horoscope))
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
         # made it in, so a silently absent section is visible without digging.

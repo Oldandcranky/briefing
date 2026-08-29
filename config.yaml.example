@@ -62,6 +62,12 @@ full_text:
 #   history_days: 30           # how long an entry counts as "already seen"
 #   max_shown: 15
 
+# Optional. Daily horoscope from ohmanda.com — no key, no account. Trimmed to the
+# first couple of sentences and shown under the quote. Omit to skip the section.
+# horoscope:
+#   sign: sagittarius
+#   sentences: 2
+
 audio:
   prompts:               # one is picked at random each run
     - "Two hosts, brisk news briefing, no filler. Lead with what changed today."

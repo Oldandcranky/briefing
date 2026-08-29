@@ -638,6 +638,59 @@ check("an about line is escaped",
       "&lt;img" in b.extras_block([{"title": "t", "feed": "f", "link": "",
                                     "about": "<img src=x>"}], esc2))
 
+section("horoscope")
+HORO = {"sign": "sagittarius", "date": "2026-08-29",
+        "horoscope": "Skip grand outings to relish the peace of home, dearest archer. "
+                     "As the Pisces Moon glides on, rest. A third sentence that should "
+                     "not appear anywhere in the output at all."}
+_h_real = _u.urlopen
+_u.urlopen = lambda req, timeout=None: FakeResp(json.dumps(HORO).encode())
+b.CFG["horoscope"] = {"sign": "sagittarius"}
+h = b.fetch_horoscope()
+check("horoscope fetched", h and h["sign"] == "Sagittarius", h)
+check("glyph resolved", h["glyph"] == "\u2650", h["glyph"])
+check("trimmed to two sentences",
+      "dearest archer" in h["text"] and "third sentence" not in h["text"], h["text"])
+check("api date kept for the log", h["date"] == "2026-08-29")
+b.CFG["horoscope"] = {"sign": "sagittarius", "sentences": 3}
+check("sentence count is configurable", "third sentence" in b.fetch_horoscope()["text"])
+b.CFG["horoscope"] = {"sign": "sagittarius"}
+_u.urlopen = lambda req, timeout=None: FakeResp(json.dumps({"horoscope": ""}).encode())
+check("an empty horoscope is dropped", b.fetch_horoscope() is None)
+def _h_boom(req, timeout=None): raise OSError("down")
+_u.urlopen = _h_boom
+check("a dead horoscope api is not fatal", b.fetch_horoscope() is None)
+_saved = b.CFG.pop("horoscope")
+check("unconfigured means no horoscope", b.fetch_horoscope() is None)
+b.CFG["horoscope"] = _saved
+_u.urlopen = _h_real
+
+esc3 = __import__("html").escape
+hb = b.horoscope_block({"sign": "Sagittarius", "glyph": "\u2650",
+                        "text": "Rest today.", "date": ""}, esc3)
+check("page block labels the sign", "\u2650 Sagittarius" in hb and "Rest today." in hb)
+check("page block is styled as an aside", "class=horoscope" in hb and "class=hsign" in hb)
+check("no horoscope means no block", b.horoscope_block(None, esc3) == "")
+check("horoscope text is escaped",
+      "&lt;img" in b.horoscope_block({"sign": "S", "glyph": "", "text": "<img src=x>"}, esc3))
+mail_h = b.email_html("T", "- A note.", None, [], "https://e.com/", "A quote.", "", None,
+                      {"sign": "Sagittarius", "glyph": "\u2650", "text": "Rest today."})
+check("email carries the horoscope", "Rest today." in mail_h)
+check("email horoscope sits under the quote",
+      mail_h.index("A quote.") < mail_h.index("Rest today.") < mail_h.index("A note."))
+check("no horoscope means no email block",
+      "Rest today." not in b.email_html("T", "- n", None, [], "https://e.com/", "q", "", None, None))
+
+section("date format")
+import datetime as _dt  # noqa: E402
+_d = _dt.datetime(2026, 8, 29, 5, 45)
+check("meta drops the year", f"{_d:%A, %B} {_d.day}" == "Saturday, August 29",
+      f"{_d:%A, %B} {_d.day}")
+check("page meta uses the same shape", "%A, %B} {e['local'].day}" in
+      __import__("inspect").getsource(b.write_index))
+check("no four-digit year in the page meta line",
+      "%Y" not in __import__("inspect").getsource(b.write_index))
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],
