@@ -730,7 +730,7 @@ def extras_block(extras, esc, expanded=False):
         out.append(f"<details class=torrents{' open' if expanded else ''}>"
                    f"<summary>{len(group)} from {esc(feed)}</summary>"
                    f"<ul class=tlist>{''.join(rows)}</ul></details>")
-    return "".join(out)
+    return (f"<div class=extras><h3>Not in the episode</h3>{''.join(out)}</div>")
 
 
 def torrents_block(picks, esc, expanded=False):
@@ -856,6 +856,10 @@ h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .quote {{ margin:1.1rem 0 0; padding:.15rem 0 .15rem 1rem;
          border-left:3px solid var(--accent); font-style:italic; color:var(--fg);
          font-size:.95rem; line-height:1.5; }}
+.extras {{ margin:1.2rem 0 0; }}
+.extras h3 {{ margin:0 0 .5rem; font-size:.72rem; letter-spacing:.09em;
+             text-transform:uppercase; color:var(--dim); font-weight:600; }}
+.extras .torrents {{ margin:.5rem 0 0; }}
 .torrents {{ margin:1rem 0 0; border:1px solid var(--line); border-radius:8px;
             padding:.75rem .9rem; }}
 .torrents summary {{ cursor:pointer; font-size:.72rem; letter-spacing:.09em;
@@ -992,7 +996,11 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
                 f'<ul style="margin:0 0 14px;padding-left:18px;font-size:14px;color:{ink}">'
                 f'{"".join(rows)}</ul>')
         extra_html = (f'<div style="border-top:1px solid {line};margin-top:22px;'
-                      f'padding-top:16px">{"".join(chunks)}</div>')
+                      f'padding-top:16px">'
+                      f'<div style="font-size:11px;letter-spacing:.08em;'
+                      f'text-transform:uppercase;color:{dim};font-weight:600;'
+                      f'padding:0 0 12px">Not in the episode</div>'
+                      f'{"".join(chunks)}</div>')
 
     return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
