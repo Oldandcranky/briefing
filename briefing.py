@@ -261,6 +261,7 @@ def collect_items(blocked=frozenset()):
                     continue
             item = {"title": title, "feed": name, "feeds": [name],
                     "link": e.get("link") or "", "summary": plain(e.get("summary")),
+                    "comments": e.get("comments") or "",
                     "text": "", "pos": kept, "fidx": fidx}
             item["key"] = item_key(item)
             if item["key"] in blocked:
@@ -714,6 +715,50 @@ def weather_block(w, esc):
 # Feed boilerplate that carries no information: HN summaries are the word
 # "Comments", Reddit appends a submission footer to everything.
 BLURB_JUNK = re.compile(r"submitted by\s*/u/\S+(\s+to\s+\S+)?|\[link\]|\[comments\]", re.I)
+
+
+# Hacker News RSS carries no description, but its API has the numbers that
+# actually help you decide whether to open something.
+HN_ITEM = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
+
+
+def hn_stats(url):
+    """Points and comments for one Hacker News item; "" when unavailable."""
+    m = HN_ITEM.search(url or "")
+    if not m:
+        return ""
+    try:
+        req = urllib.request.Request(
+            f"https://hacker-news.firebaseio.com/v0/item/{m.group(1)}.json",
+            headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    bits = []
+    if data.get("score"):
+        n = data["score"]
+        bits.append(f"{n} point" + ("" if n == 1 else "s"))
+    if data.get("descendants"):
+        n = data["descendants"]
+        bits.append(f"{n} comment" + ("" if n == 1 else "s"))
+    return " \u00b7 ".join(bits)
+
+
+def enrich_extras(extras):
+    """Fill in about lines the feed itself could not provide."""
+    todo = [x for x in extras if not x.get("about") and HN_ITEM.search(x.get("comments") or "")]
+    if not todo:
+        return
+    with futures.ThreadPoolExecutor(max_workers=4) as pool:
+        for item, stats in zip(todo, pool.map(lambda x: hn_stats(x["comments"]), todo)):
+            item["about"] = stats
+    got = sum(1 for x in todo if x["about"])
+    log.info("hacker news api: %d/%d items given points and comments", got, len(todo))
+    if not got:
+        log.warning("hacker news api returned nothing for %d items", len(todo))
 
 
 def blurb(text, title="", limit=160):
@@ -1214,9 +1259,13 @@ def main():
             [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
              for i in spoken]))
         if extras:
-            (OUT / f"{stamp}.extras").write_text(json.dumps(
-                [{"title": i["title"], "feed": i["feed"], "link": i["link"],
-                  "about": blurb(i.get("summary", ""), i["title"])} for i in extras]))
+            rows = [{"title": i["title"], "feed": i["feed"], "link": i["link"],
+                     "comments": i.get("comments", ""),
+                     "about": blurb(i.get("summary", ""), i["title"])} for i in extras]
+            enrich_extras(rows)
+            for r in rows:
+                r.pop("comments", None)
+            (OUT / f"{stamp}.extras").write_text(json.dumps(rows))
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()

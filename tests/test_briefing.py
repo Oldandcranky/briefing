@@ -592,6 +592,37 @@ check("email shows the about line",
       "Does a useful thing, quickly." in
       b.email_html("T", "- n", None, [], "https://e.com/", "", "", EXA))
 check("plain text shows the about line", "Does a useful thing, quickly." in b.extras_mail(EXA))
+section("hacker news api")
+HN_URL = "https://news.ycombinator.com/item?id=49492632"
+_hn_real = _u.urlopen
+def _hn_fake(req, timeout=None):
+    url = req.full_url if hasattr(req, "full_url") else str(req)
+    body = json.dumps({"score": 312, "descendants": 88}) if "49492632" in url else "null"
+    return FakeResp(body.encode())
+_u.urlopen = _hn_fake
+check("points and comments become the about line",
+      b.hn_stats(HN_URL) == "312 points \u00b7 88 comments", b.hn_stats(HN_URL))
+_u.urlopen = lambda req, timeout=None: FakeResp(json.dumps({"score": 1, "descendants": 1}).encode())
+check("singular reads correctly", b.hn_stats(HN_URL) == "1 point \u00b7 1 comment", b.hn_stats(HN_URL))
+_u.urlopen = lambda req, timeout=None: FakeResp(b"null")
+check("a deleted item yields nothing", b.hn_stats(HN_URL) == "")
+def _hn_boom(req, timeout=None): raise OSError("api down")
+_u.urlopen = _hn_boom
+check("a dead api is not fatal", b.hn_stats(HN_URL) == "")
+check("a non-hn url is ignored", b.hn_stats("https://example.com/x") == "")
+check("a blank url is safe", b.hn_stats("") == "" and b.hn_stats(None) == "")
+
+_u.urlopen = _hn_fake
+rows = [{"title": "A story", "feed": "Hacker News", "link": "https://x.example/a",
+         "comments": HN_URL, "about": ""},
+        {"title": "Already described", "feed": "The Verge", "link": "https://v.example/b",
+         "comments": "", "about": "A real description from the feed."}]
+b.enrich_extras(rows)
+check("an empty about line is filled from the api", rows[0]["about"].startswith("312 points"))
+check("an existing about line is left alone",
+      rows[1]["about"] == "A real description from the feed.")
+_u.urlopen = _hn_real
+
 check("an about line is escaped",
       "&lt;img" in b.extras_block([{"title": "t", "feed": "f", "link": "",
                                     "about": "<img src=x>"}], esc2))
