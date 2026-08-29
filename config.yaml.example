@@ -8,6 +8,13 @@ feeds:
 
 max_per_feed: 8
 
+# Feeds regenerated daily carry no per-entry dates — a "trending today" listing is
+# today's by construction. Name those here and the freshness window takes them at
+# face value. Everything else still follows the rule that an undated entry is
+# dropped, which is how a months-old item sneaks into a "last 48 hours" briefing.
+undated_ok:
+  - GitHub Trending
+
 # Optional. Opens the episode, the email and the page with a local forecast.
 # Free, no API key, US only (National Weather Service). Omit to skip weather.
 weather:

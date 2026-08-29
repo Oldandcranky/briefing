@@ -231,6 +231,7 @@ def collect_items(blocked=frozenset()):
     into the first feed that ran them. Filtering happens before the per-feed cap, so
     a run of old entries can't crowd out today's news."""
     window, now = CFG.get("max_age_hours", 48), time.time()
+    undated_ok = set(CFG.get("undated_ok") or [])
     items, seen = [], 0
     for fidx, (name, url) in enumerate(CFG["feeds"].items()):
         d = feedparser.parse(url, agent=UA)
@@ -244,7 +245,12 @@ def collect_items(blocked=frozenset()):
             if window:
                 ts = published_ts(e)
                 # A missing date is not evidence of freshness — it is the usual way
-                # a months-old item sneaks into a "last 48 hours" briefing.
+                # a months-old item sneaks into a "last 48 hours" briefing. The
+                # exception is a feed that is itself regenerated daily, where every
+                # entry is today's by construction (a "trending today" listing);
+                # name those in undated_ok and they are taken at face value.
+                if ts is None and name in undated_ok:
+                    ts = now
                 if ts is None:
                     undated += 1
                     log.debug("drop undated: %s", title[:90])

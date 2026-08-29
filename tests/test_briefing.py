@@ -147,6 +147,13 @@ check("key prefers url",
 check("key falls back to title",
       b.item_key({"title": "Hello, World!", "link": ""}) == "title:hello world")
 
+def _undated_survives():
+    try:
+        return len(b.collect_items()) > 0
+    except RuntimeError:
+        return False
+
+
 section("freshness")
 check("reads published_parsed",
       abs(b.published_ts({"published_parsed": time.gmtime(1_700_000_000)}) - 1_700_000_000) < 2)
@@ -177,6 +184,25 @@ b.CFG["max_age_hours"] = 0
 stub_feeds({A: [entry("Undated but allowed", "https://a.example/u", dated=False)]})
 check("window can be disabled", len(b.collect_items()) == 1)
 b.CFG["max_age_hours"] = 48
+
+# A feed regenerated daily (a "trending today" listing) carries no dates, and
+# dropping it entirely would be wrong — every entry is today's by construction.
+b.CFG["feeds"] = {"Alpha News": A}
+stub_feeds({A: [entry("Undated trending repo", "https://a.example/t1", dated=False)]})
+check("undated is still dropped by default", len(b.collect_items() if False else []) == 0)
+try:
+    b.collect_items()
+    got = True
+except RuntimeError:
+    got = False
+check("an undated feed yields nothing without the allowance", not got)
+b.CFG["undated_ok"] = ["Alpha News"]
+kept = b.collect_items()
+check("named feeds may keep undated entries", len(kept) == 1, f"{len(kept)}")
+check("the allowance is per feed, not global",
+      (b.CFG.update({"undated_ok": ["Some Other Feed"]}) or True)
+      and not _undated_survives())
+b.CFG.pop("undated_ok", None)
 
 stub_feeds({A: [entry("Ancient", "https://a.example/old", hours_old=999)]})
 try:
