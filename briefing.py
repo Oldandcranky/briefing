@@ -730,7 +730,7 @@ def extras_block(extras, esc, expanded=False):
         out.append(f"<details class=torrents{' open' if expanded else ''}>"
                    f"<summary>{len(group)} from {esc(feed)}</summary>"
                    f"<ul class=tlist>{''.join(rows)}</ul></details>")
-    return (f"<div class=extras><h3>Not in the episode</h3>{''.join(out)}</div>")
+    return (f"<div class=extras><h3>Not in the podcast episode</h3>{''.join(out)}</div>")
 
 
 def torrents_block(picks, esc, expanded=False):
@@ -999,7 +999,7 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
                       f'padding-top:16px">'
                       f'<div style="font-size:11px;letter-spacing:.08em;'
                       f'text-transform:uppercase;color:{dim};font-weight:600;'
-                      f'padding:0 0 12px">Not in the episode</div>'
+                      f'padding:0 0 12px">Not in the podcast episode</div>'
                       f'{"".join(chunks)}</div>')
 
     return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
