@@ -711,6 +711,23 @@ def weather_block(w, esc):
             f"</div><div class=wx-strip>{later}</div></div>")
 
 
+# Feed boilerplate that carries no information: HN summaries are the word
+# "Comments", Reddit appends a submission footer to everything.
+BLURB_JUNK = re.compile(r"submitted by\s*/u/\S+(\s+to\s+\S+)?|\[link\]|\[comments\]", re.I)
+
+
+def blurb(text, title="", limit=160):
+    """A short 'about' line for a link, or "" when the feed offers nothing useful."""
+    s = " ".join(BLURB_JUNK.sub(" ", plain(text)).split()).strip(" -–—|·")
+    if len(s) < 25 or s.lower() == "comments":
+        return ""
+    if title and s.lower().startswith(title.lower()[:40]):
+        return ""          # a summary that just repeats the headline adds nothing
+    if len(s) <= limit:
+        return s
+    return s[:limit].rsplit(" ", 1)[0] + "\u2026"
+
+
 def extras_block(extras, esc, expanded=False):
     """Feeds kept out of the audio, grouped by source. Reading matter, not listening."""
     if not extras:
@@ -724,8 +741,10 @@ def extras_block(extras, esc, expanded=False):
         for x in group:
             href = safe_link(x.get("link", ""))
             name = esc(x.get("title", ""))
+            about = esc(x.get("about", ""))
             rows.append(f"<li>" + (f"<a href='{esc(href)}' target=_blank "
                                    f"rel='noopener noreferrer'>{name}</a>" if href else name)
+                        + (f"<span class=tmeta>{about}</span>" if about else "")
                         + "</li>")
         out.append(f"<details class=torrents{' open' if expanded else ''}>"
                    f"<summary>{len(group)} from {esc(feed)}</summary>"
@@ -986,9 +1005,12 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
             for x in group:
                 href = safe_link(x.get("link", ""))
                 name = esc(x.get("title", ""))
-                rows.append(f'<li style="margin:0 0 7px;line-height:1.4">'
+                about = esc(x.get("about", ""))
+                rows.append(f'<li style="margin:0 0 9px;line-height:1.4">'
                             + (f'<a href="{esc(href)}" style="color:{ink};'
                                f'text-decoration:none">{name}</a>' if href else name)
+                            + (f'<div style="font-size:12px;color:{dim};padding-top:2px">'
+                               f'{about}</div>' if about else "")
                             + '</li>')
             chunks.append(
                 f'<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;'
@@ -1117,6 +1139,8 @@ def extras_mail(extras):
         out.append(f"\n\n{feed} ({len(group)}):")
         for x in group:
             out.append(f"  {x.get('title', '')}")
+            if x.get("about"):
+                out.append(f"    {x['about']}")
             if safe_link(x.get("link", "")):
                 out.append(f"    {x['link']}")
     return "\n".join(out)
@@ -1188,7 +1212,8 @@ def main():
              for i in spoken]))
         if extras:
             (OUT / f"{stamp}.extras").write_text(json.dumps(
-                [{"title": i["title"], "feed": i["feed"], "link": i["link"]} for i in extras]))
+                [{"title": i["title"], "feed": i["feed"], "link": i["link"],
+                  "about": blurb(i.get("summary", ""), i["title"])} for i in extras]))
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()

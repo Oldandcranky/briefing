@@ -558,6 +558,36 @@ check("plain text lists them", "owner/repo-one" in txt and "GitHub Trending (2)"
 check("plain text omits unsafe links", "javascript:" not in txt)
 check("plain text empty when none", b.extras_mail([]) == "")
 
+# An "about" line per link, but only when the feed actually carries one.
+check("repo description becomes the about line",
+      b.blurb("Agent skill for beautiful, verifiable architecture diagrams.", "tt-a1i/archify")
+      == "Agent skill for beautiful, verifiable architecture diagrams.")
+check("hacker news boilerplate is dropped", b.blurb("Comments", "Some title") == "")
+check("reddit submission footer is dropped",
+      b.blurb("submitted by /u/someone to r/technology [link] [comments]", "T") == "")
+check("reddit body text survives the footer strip",
+      b.blurb("Worst part is it was artisanal powder tea my wife bought, notoriously "
+              "hard to clean. Pray for me. submitted by /u/x to r/y [link] [comments]", "T")
+      .startswith("Worst part is"))
+check("a summary that repeats the headline is dropped",
+      b.blurb("Debian votes to allow generative AI in packaging work",
+              "Debian votes to allow generative AI in packaging work") == "")
+check("html is stripped from the about line",
+      "<b>" not in b.blurb("<p>A <b>real</b> description of some length here to pass.</p>", "T"))
+long_about = b.blurb("word " * 80, "T")
+check("about line is truncated at a word boundary",
+      len(long_about) <= 161 and long_about.endswith("\u2026"), f"{len(long_about)}")
+EXA = [{"title": "owner/repo", "feed": "GitHub Trending", "link": "https://gh.example/1",
+        "about": "Does a useful thing, quickly."}]
+check("page shows the about line", "Does a useful thing, quickly." in b.extras_block(EXA, esc2))
+check("email shows the about line",
+      "Does a useful thing, quickly." in
+      b.email_html("T", "- n", None, [], "https://e.com/", "", "", EXA))
+check("plain text shows the about line", "Does a useful thing, quickly." in b.extras_mail(EXA))
+check("an about line is escaped",
+      "&lt;img" in b.extras_block([{"title": "t", "feed": "f", "link": "",
+                                    "about": "<img src=x>"}], esc2))
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],
