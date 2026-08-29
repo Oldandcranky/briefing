@@ -1181,7 +1181,6 @@ def main():
         picks = fetch_torrents()
         fresh_picks = unseen_torrents(picks, tledger, tdays)[: tcfg.get("max_shown", 15)]
         items = collect_items(blocked)
-        add_full_text(items)
         # Some feeds are worth reading but not worth listening to: kept out of the
         # digest entirely, so NotebookLM never sees them and the hosts never mention
         # them, but still shown in the email and on the page.
@@ -1194,6 +1193,10 @@ def main():
         if not spoken:
             raise RuntimeError("every collected story is excluded from the digest; "
                                "nothing left to build an episode from")
+        # Fetch article bodies only for what the hosts will actually read. Doing this
+        # before the split spent most of the budget on links that appear solely in the
+        # email, and left the digest as a list of one-line RSS blurbs.
+        add_full_text(spoken)
         build_digest(digest, spoken, weather)
         points, title, quote = make_episode(digest, prev, audio, stamp, weather)
         (OUT / f"{stamp}.txt").write_text(points)

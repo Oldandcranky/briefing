@@ -456,6 +456,14 @@ check("torrents never reach the digest",
       "Brand New Release" not in dtext and "torrent" not in dtext.lower())
 check("build_digest takes no torrents argument",
       "torrent" not in __import__("inspect").signature(b.build_digest).parameters)
+
+# Article bodies are only worth fetching for stories the hosts will read. Fetching
+# before the split spent the budget on email-only links and left the digest as a
+# list of one-line blurbs, which is what padded the audio.
+_main_src = __import__("inspect").getsource(b.main)
+check("full text is fetched after the audio split",
+      _main_src.index("spoken = [") < _main_src.index("add_full_text("))
+check("full text targets the spoken stories only", "add_full_text(spoken)" in _main_src)
 b.CFG.pop("torrents")
 
 section("html email")
