@@ -613,7 +613,8 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
 
 def prune():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
-        for ext in (".txt", ".title", ".sources", ".weather", ".torrents", ".quote"):
+        for ext in (".txt", ".title", ".sources", ".weather", ".torrents", ".quote",
+                    ".extras"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.name)
@@ -642,7 +643,7 @@ def episodes():
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
         notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
         wx, tor = f.with_suffix(".weather"), f.with_suffix(".torrents")
-        qfile = f.with_suffix(".quote")
+        qfile, extra = f.with_suffix(".quote"), f.with_suffix(".extras")
         secs = duration(f)
         try:
             sources = json.loads(srcs.read_text()) if srcs.exists() else []
@@ -662,6 +663,7 @@ def episodes():
         out.append({
             "sources": sources, "weather": weather, "torrents": torrents,
             "quote": qfile.read_text().strip() if qfile.exists() else "",
+            "extras": json.loads(extra.read_text()) if extra.exists() else [],
             "file": f, "size": f.stat().st_size, "secs": secs,
             "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
             # RSS wants UTC; the page should show the day the episode is named for.
@@ -707,6 +709,28 @@ def weather_block(w, esc):
             f"<span>{esc(w['label'])} &middot; {esc(now['name'].lower())}"
             f"{' &middot; wind ' + esc(now['wind']) if now['wind'] else ''}</span>{rain}</div>"
             f"</div><div class=wx-strip>{later}</div></div>")
+
+
+def extras_block(extras, esc, expanded=False):
+    """Feeds kept out of the audio, grouped by source. Reading matter, not listening."""
+    if not extras:
+        return ""
+    by_feed = {}
+    for x in extras:
+        by_feed.setdefault(x.get("feed", "Other"), []).append(x)
+    out = []
+    for feed, group in by_feed.items():
+        rows = []
+        for x in group:
+            href = safe_link(x.get("link", ""))
+            name = esc(x.get("title", ""))
+            rows.append(f"<li>" + (f"<a href='{esc(href)}' target=_blank "
+                                   f"rel='noopener noreferrer'>{name}</a>" if href else name)
+                        + "</li>")
+        out.append(f"<details class=torrents{' open' if expanded else ''}>"
+                   f"<summary>{len(group)} from {esc(feed)}</summary>"
+                   f"<ul class=tlist>{''.join(rows)}</ul></details>")
+    return "".join(out)
 
 
 def torrents_block(picks, esc, expanded=False):
@@ -802,6 +826,7 @@ def write_index(eps):
             + weather_block(e.get("weather"), esc)
             + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
             + (f"<ul>{points}</ul>" if points else "")
+            + extras_block(e.get("extras"), esc, expanded=(n == 0))
             + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
     (OUT / "index.html").write_text(f"""<!doctype html>
 <html lang=en><meta charset=utf-8>
@@ -880,7 +905,7 @@ into any podcast app.</p>
     log.info("index: %d episodes", len(eps))
 
 
-def email_html(title, points, weather, picks, link, quote="", meta=""):
+def email_html(title, points, weather, picks, link, quote="", meta="", extras=None):
     """HTML email. Inline styles and tables only — mail clients ignore stylesheets,
     and several strip <style> outright. No images, so nothing is blocked or tracked.
     """
@@ -946,6 +971,29 @@ def email_html(title, points, weather, picks, link, quote="", meta=""):
                   f'font-size:15px;font-style:italic;line-height:1.5;color:{ink}">'
                   f'{esc(quote)}</td></tr></table>')
 
+    extra_html = ""
+    if extras:
+        by_feed = {}
+        for x in extras:
+            by_feed.setdefault(x.get("feed", "Other"), []).append(x)
+        chunks = []
+        for feed, group in by_feed.items():
+            rows = []
+            for x in group:
+                href = safe_link(x.get("link", ""))
+                name = esc(x.get("title", ""))
+                rows.append(f'<li style="margin:0 0 7px;line-height:1.4">'
+                            + (f'<a href="{esc(href)}" style="color:{ink};'
+                               f'text-decoration:none">{name}</a>' if href else name)
+                            + '</li>')
+            chunks.append(
+                f'<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;'
+                f'color:{dim};font-weight:600;padding:0 0 8px">{esc(feed)}</div>'
+                f'<ul style="margin:0 0 14px;padding-left:18px;font-size:14px;color:{ink}">'
+                f'{"".join(rows)}</ul>')
+        extra_html = (f'<div style="border-top:1px solid {line};margin-top:22px;'
+                      f'padding-top:16px">{"".join(chunks)}</div>')
+
     return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
             f'style="background:{page};padding:22px 12px">'
@@ -964,6 +1012,7 @@ def email_html(title, points, weather, picks, link, quote="", meta=""):
             f'{wx}'
             f'{quoted}'
             f'<ul style="margin:0;padding-left:19px;font-size:15px;color:{ink}">{bullets}</ul>'
+            f'{extra_html}'
             f'<div style="padding-top:24px">'
             f'<a href="{esc(link)}" style="background:{accent};color:#fff;text-decoration:none;'
             f'font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;'
@@ -1048,6 +1097,23 @@ def torrents_mail(picks):
     return "\n".join(lines)
 
 
+def extras_mail(extras):
+    """Plain-text tail for feeds kept out of the audio."""
+    if not extras:
+        return ""
+    by_feed = {}
+    for x in extras:
+        by_feed.setdefault(x.get("feed", "Other"), []).append(x)
+    out = []
+    for feed, group in by_feed.items():
+        out.append(f"\n\n{feed} ({len(group)}):")
+        for x in group:
+            out.append(f"  {x.get('title', '')}")
+            if safe_link(x.get("link", "")):
+                out.append(f"    {x['link']}")
+    return "\n".join(out)
+
+
 def episode_link(stamp):
     """The listening page, anchored at this episode — not a 60MB download link."""
     return f"{CFG['feed']['base_url'].rstrip('/')}/#{stamp}"
@@ -1084,7 +1150,19 @@ def main():
         fresh_picks = unseen_torrents(picks, tledger, tdays)[: tcfg.get("max_shown", 15)]
         items = collect_items(blocked)
         add_full_text(items)
-        build_digest(digest, items, weather)
+        # Some feeds are worth reading but not worth listening to: kept out of the
+        # digest entirely, so NotebookLM never sees them and the hosts never mention
+        # them, but still shown in the email and on the page.
+        quiet = set(CFG.get("exclude_from_digest") or [])
+        spoken = [i for i in items if i["feed"] not in quiet]
+        extras = [i for i in items if i["feed"] in quiet]
+        if quiet:
+            log.info("excluded from the audio: %d stories from %s",
+                     len(extras), ", ".join(sorted(quiet)) or "nothing")
+        if not spoken:
+            raise RuntimeError("every collected story is excluded from the digest; "
+                               "nothing left to build an episode from")
+        build_digest(digest, spoken, weather)
         points, title, quote = make_episode(digest, prev, audio, stamp, weather)
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
@@ -1095,9 +1173,14 @@ def main():
         if fresh_picks:
             (OUT / f"{stamp}.torrents").write_text(json.dumps(fresh_picks))
         remember_torrents(picks, tledger, stamp, tdays)
+        # Only spoken stories join the note-matching pool; a note can't have come
+        # from a feed the hosts never read.
         (OUT / f"{stamp}.sources").write_text(json.dumps(
             [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
-             for i in items]))
+             for i in spoken]))
+        if extras:
+            (OUT / f"{stamp}.extras").write_text(json.dumps(
+                [{"title": i["title"], "feed": i["feed"], "link": i["link"]} for i in extras]))
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()
@@ -1111,8 +1194,10 @@ def main():
                   torrents_mail(fresh_picks).lstrip("\n")
                   + (f"\n\n{wx_line}" if wx_line else "")
                   + (f"\n\n{quote}" if quote else "")
-                  + f"\n\n{points}\n\nListen: {link}",
-                  email_html(title, points, weather, fresh_picks, link, quote, meta))
+                  + f"\n\n{points}"
+                  + extras_mail(extras)
+                  + f"\n\nListen: {link}",
+                  email_html(title, points, weather, fresh_picks, link, quote, meta, extras))
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
         # made it in, so a silently absent section is visible without digging.

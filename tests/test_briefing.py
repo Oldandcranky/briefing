@@ -530,6 +530,34 @@ b.CFG.pop("weather")
 
 check("prune sweeps the quote sidecar", ".quote" in __import__("inspect").getsource(b.prune))
 
+section("feeds kept out of the audio")
+EX = [{"title": "owner/repo-one", "feed": "GitHub Trending", "link": "https://gh.example/1"},
+      {"title": "owner/repo-two", "feed": "GitHub Trending", "link": "javascript:alert(1)"}]
+esc2 = __import__("html").escape
+blk = b.extras_block(EX, esc2, expanded=True)
+check("extras render grouped by feed", "2 from GitHub Trending" in blk, blk[:70])
+check("extras link out", "href='https://gh.example/1'" in blk)
+check("an unsafe extras link is not linked", "javascript:" not in blk)
+check("extras open on the newest episode", "<details class=torrents open>" in blk)
+check("collapsed on older episodes", " open>" not in b.extras_block(EX, esc2, expanded=False))
+check("no extras means no block", b.extras_block([], esc2) == "")
+nasty = [{"title": "<img src=x onerror=1>", "feed": "Evil & Co", "link": ""}]
+check("extras titles and feed names escaped",
+      "&lt;img" in b.extras_block(nasty, esc2) and "Evil &amp; Co" in b.extras_block(nasty, esc2))
+
+mail = b.email_html("T", "- A note.", None, [], "https://e.com/", "", "", EX)
+check("email carries the extras", "owner/repo-one" in mail and "GitHub Trending" in mail)
+check("email extras sit after the notes",
+      mail.index("A note.") < mail.index("owner/repo-one"))
+check("email extras appear before the listen button",
+      mail.index("owner/repo-one") < mail.index("Listen to the episode"))
+check("no extras means no email section", "GitHub Trending" not in
+      b.email_html("T", "- A note.", None, [], "https://e.com/", "", "", []))
+txt = b.extras_mail(EX)
+check("plain text lists them", "owner/repo-one" in txt and "GitHub Trending (2)" in txt)
+check("plain text omits unsafe links", "javascript:" not in txt)
+check("plain text empty when none", b.extras_mail([]) == "")
+
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}
 stub_feeds({A: [entry("Alpha one", "https://a.example/1", summary="<p>A &amp; body</p>")],

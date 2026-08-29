@@ -15,6 +15,13 @@ max_per_feed: 8
 undated_ok:
   - GitHub Trending
 
+# Feeds worth reading but not worth listening to. These never enter the digest, so
+# NotebookLM never sees them and the hosts never mention them — they appear only in
+# the email and on the page. They still pass through dedup and the ledger, so you
+# are not shown the same thing twice.
+exclude_from_digest:
+  - GitHub Trending
+
 # Optional. Opens the episode, the email and the page with a local forecast.
 # Free, no API key, US only (National Weather Service). Omit to skip weather.
 weather:
