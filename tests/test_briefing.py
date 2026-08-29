@@ -211,6 +211,17 @@ try:
 except RuntimeError as ex:
     check("empty result raises a useful error", "stale" in str(ex), str(ex)[:60])
 
+section("pointer entries")
+b.CFG["feeds"] = {"Alpha News": A}
+stub_feeds({A: [entry("A real headline about something", "https://a.example/1"),
+                entry("ISC Stormcast For Friday https://isc.example/podcastdetail/10071",
+                      "https://a.example/2"),
+                entry("Another real headline here", "https://a.example/3")]})
+got = [i["title"] for i in b.collect_items()]
+check("a title containing a url is dropped",
+      all("http" not in t for t in got), got)
+check("real headlines survive", len(got) == 2, got)
+
 section("dedup")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B, "Gamma Daily": G}
 stub_feeds({

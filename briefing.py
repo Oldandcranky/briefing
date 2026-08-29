@@ -242,6 +242,12 @@ def collect_items(blocked=frozenset()):
             title = plain(e.get("title"))
             if not title:
                 continue
+            # A headline containing a bare URL is a pointer entry, not a story —
+            # SANS publishes one per day linking its podcast, and it extracts to
+            # nothing. Real headlines do not carry links.
+            if "http://" in title or "https://" in title:
+                log.debug("drop pointer entry: %s", title[:90])
+                continue
             if window:
                 ts = published_ts(e)
                 # A missing date is not evidence of freshness — it is the usual way
