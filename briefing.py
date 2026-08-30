@@ -1033,11 +1033,19 @@ into any podcast app.</p>
     log.info("index: %d episodes", len(eps))
 
 
-def email_html(title, points, weather, picks, link, quote="", meta="", extras=None,
-               horoscope=None):
-    """HTML email. Inline styles and tables only — mail clients ignore stylesheets,
-    and several strip <style> outright. No images, so nothing is blocked or tracked.
+def email_html(ep, link):
+    """HTML email, rendered from the same episode dict the page uses.
+
+    One shape, read from the sidecars, feeding both surfaces — so a section cannot
+    reach one and miss the other. Inline styles and tables only: mail clients ignore
+    stylesheets and several strip <style> outright, and no images, so nothing is
+    blocked or tracked.
     """
+    title, points = ep["title"], ep.get("notes") or ""
+    weather, picks = ep.get("weather"), ep.get("torrents") or []
+    quote, extras = ep.get("quote") or "", ep.get("extras") or []
+    horoscope = ep.get("horoscope")
+    meta = f"{ep['local']:%A, %B} {ep['local'].day} \u00b7 {ep['clock']}"
     esc = html.escape
     ink, dim, line = "#1c1b19", "#6b6862", "#e6e2db"
     accent, card, page = "#8a5a2b", "#ffffff", "#f4f2ee"
@@ -1164,6 +1172,19 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
             f'font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;'
             f'display:inline-block">Listen to the episode</a></div>'
             f'</td></tr></table></td></tr></table></body></html>')
+
+
+def email_plain(ep, link):
+    """Plain-text twin of email_html, from the same episode dict and in the same order."""
+    wx = weather_summary(ep.get("weather"))
+    h = ep.get("horoscope")
+    return (torrents_mail(ep.get("torrents") or []).lstrip("\n")
+            + (f"\n\n{wx}" if wx else "")
+            + (f"\n\n{ep['quote']}" if ep.get("quote") else "")
+            + (f"\n\n{h['sign']}: {h['text']}" if h else "")
+            + f"\n\n{ep.get('notes') or ''}"
+            + extras_mail(ep.get("extras") or [])
+            + f"\n\nListen: {link}")
 
 
 def check_rendered(html_body, plain_body, weather, picks, extras, quote, horoscope):
@@ -1376,27 +1397,20 @@ def main():
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()
+        # Everything below renders from what was just written to disk, so the email
+        # and the page cannot disagree, and a sidecar that failed to write is missing
+        # from both rather than from one.
         eps = episodes()
         write_feed(eps)
         write_index(eps)
         today = next((e for e in eps if e["file"] == audio), None)
-        # The year lives in the subject line, where it sorts; here it is clutter.
-        meta = (f"{today['local']:%A, %B} {today['local'].day} \u00b7 {today['clock']}"
-                if today else "")
-        wx_line, link = weather_summary(weather), episode_link(stamp)
-        plain_body = (
-                  torrents_mail(fresh_picks).lstrip("\n")
-                  + (f"\n\n{wx_line}" if wx_line else "")
-                  + (f"\n\n{quote}" if quote else "")
-                  + (f"\n\n{horoscope['sign']}: {horoscope['text']}"
-                     if horoscope else "")
-                  + f"\n\n{points}"
-                  + extras_mail(extra_rows)
-                  + f"\n\nListen: {link}")
-        html_body = email_html(title, points, weather, fresh_picks, link, quote, meta,
-                               extra_rows, horoscope)
-        check_rendered(html_body, plain_body, weather, fresh_picks, extra_rows, quote, horoscope)
-        send_mail(title, plain_body, html_body)
+        if today is None:
+            raise RuntimeError(f"{audio.name} is missing from the episode list")
+        link = episode_link(stamp)
+        html_body, plain_body = email_html(today, link), email_plain(today, link)
+        check_rendered(html_body, plain_body, weather, fresh_picks, extra_rows, quote,
+                       horoscope)
+        send_mail(today["title"], plain_body, html_body)
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
         # made it in, so a silently absent section is visible without digging.
