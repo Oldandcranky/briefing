@@ -475,6 +475,17 @@ _main_src = __import__("inspect").getsource(b.main)
 check("full text is fetched after the audio split",
       _main_src.index("spoken = [") < _main_src.index("add_full_text("))
 check("full text targets the spoken stories only", "add_full_text(spoken)" in _main_src)
+
+# The about lines once reached the page but not the inbox: enriched rows went to the
+# sidecar while the raw collected items were handed to the email.
+check("the email is given the enriched extras, not the raw items",
+      "meta, extra_rows," in _main_src and "meta, extras," not in _main_src)
+check("the plain-text tail is given the enriched extras too",
+      "extras_mail(extra_rows)" in _main_src and "extras_mail(extras)" not in _main_src)
+check("the sidecar is written from the same list",
+      "json.dumps(extra_rows)" in _main_src)
+check("enrichment runs before any of them",
+      _main_src.index("enrich_extras(extra_rows)") < _main_src.index("extras_mail(extra_rows)"))
 b.CFG.pop("torrents")
 
 section("html email")

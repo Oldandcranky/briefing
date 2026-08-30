@@ -1332,14 +1332,17 @@ def main():
         (OUT / f"{stamp}.sources").write_text(json.dumps(
             [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
              for i in spoken]))
-        if extras:
-            rows = [{"title": i["title"], "feed": i["feed"], "link": i["link"],
-                     "comments": i.get("comments", ""),
-                     "about": blurb(i.get("summary", ""), i["title"])} for i in extras]
-            enrich_extras(rows)
-            for r in rows:
-                r.pop("comments", None)
-            (OUT / f"{stamp}.extras").write_text(json.dumps(rows))
+        # Build these once and use the same list everywhere. Writing enriched rows to
+        # the sidecar while handing the raw items to the email is how the about lines
+        # reached the page but not the inbox.
+        extra_rows = [{"title": i["title"], "feed": i["feed"], "link": i["link"],
+                       "comments": i.get("comments", ""),
+                       "about": blurb(i.get("summary", ""), i["title"])} for i in extras]
+        enrich_extras(extra_rows)
+        for r in extra_rows:
+            r.pop("comments", None)
+        if extra_rows:
+            (OUT / f"{stamp}.extras").write_text(json.dumps(extra_rows))
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()
@@ -1358,9 +1361,9 @@ def main():
                   + (f"\n\n{horoscope['sign']}: {horoscope['text']}"
                      if horoscope else "")
                   + f"\n\n{points}"
-                  + extras_mail(extras)
+                  + extras_mail(extra_rows)
                   + f"\n\nListen: {link}",
-                  email_html(title, points, weather, fresh_picks, link, quote, meta, extras,
+                  email_html(title, points, weather, fresh_picks, link, quote, meta, extra_rows,
                              horoscope))
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
