@@ -478,8 +478,9 @@ check("full text targets the spoken stories only", "add_full_text(spoken)" in _m
 
 # The about lines once reached the page but not the inbox: enriched rows went to the
 # sidecar while the raw collected items were handed to the email.
+_main_flat = " ".join(_main_src.split())
 check("the email is given the enriched extras, not the raw items",
-      "meta, extra_rows," in _main_src and "meta, extras," not in _main_src)
+      "meta, extra_rows," in _main_flat and "meta, extras," not in _main_flat)
 check("the plain-text tail is given the enriched extras too",
       "extras_mail(extra_rows)" in _main_src and "extras_mail(extras)" not in _main_src)
 check("the sidecar is written from the same list",
@@ -701,6 +702,48 @@ check("page meta uses the same shape", "%A, %B} {e['local'].day}" in
       __import__("inspect").getsource(b.write_index))
 check("no four-digit year in the page meta line",
       "%Y" not in __import__("inspect").getsource(b.write_index))
+
+section("render tripwire")
+_cap = Capture() if "Capture" in dir() else None
+import logging as _lg2  # noqa: E402
+class _Cap(_lg2.Handler):
+    def __init__(s): super().__init__(); s.msgs = []
+    def emit(s, r): s.msgs.append((r.levelname, r.getMessage()))
+cap2 = _Cap(); b.log.addHandler(cap2)
+
+WX = {"label": "Somewhere", "periods": [{"name": "Today", "temp": 81, "unit": "F",
+      "day": True, "wind": "", "short": "Sunny", "precip": 0, "detail": "d"}]}
+PICKS = [{"id": "1", "path": "/t/1", "title": "A Release Name Here-TEAM",
+          "age": "1 hour ago", "seeders": 5, "leechers": 1}]
+EXR = [{"title": "owner/repo-name", "feed": "GitHub Trending",
+        "link": "https://gh.example/1", "about": "Does a specific useful thing."}]
+QUOTE, HORO = "A dry little line about today.", {"sign": "S", "glyph": "", "text": "Rest today."}
+
+good = b.email_html("T", "- A note.", WX, PICKS, "https://e.com/", QUOTE, "", EXR, HORO)
+cap2.msgs.clear()
+missing = b.check_rendered(good, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
+check("a complete email trips nothing", missing == [], missing)
+check("the tripwire reports what it counted",
+      any("with an about line" in m for _, m in cap2.msgs), [m for _, m in cap2.msgs])
+
+# the exact bug: enriched rows computed, raw ones rendered
+raw = [{k: v for k, v in EXR[0].items() if k != "about"}]
+blind = b.email_html("T", "- A note.", WX, PICKS, "https://e.com/", QUOTE, "", raw, HORO)
+cap2.msgs.clear()
+missing = b.check_rendered(blind, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
+check("dropped about lines are caught", "every about line" in missing, missing)
+check("and it warns", any(lv == "WARNING" for lv, _ in cap2.msgs), [m for _, m in cap2.msgs])
+
+for name, args in (("weather", dict(weather=None)), ("quote", dict(quote="")),
+                   ("horoscope", dict(horoscope=None)), ("extras", dict(extras=None)),
+                   ("picks", dict(picks=None))):
+    kw = dict(weather=WX, picks=PICKS, extras=EXR, quote=QUOTE, horoscope=HORO)
+    kw.update(args)
+    stripped = b.email_html("T", "- A note.", kw["weather"], kw["picks"] or [],
+                            "https://e.com/", kw["quote"], "", kw["extras"], kw["horoscope"])
+    missing = b.check_rendered(stripped, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
+    check(f"a missing {name} section is caught", name in missing, missing)
+b.log.removeHandler(cap2)
 
 section("digest")
 b.CFG["feeds"] = {"Alpha News": A, "Beta Wire": B}

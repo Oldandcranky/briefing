@@ -1166,6 +1166,36 @@ def email_html(title, points, weather, picks, link, quote="", meta="", extras=No
             f'</td></tr></table></td></tr></table></body></html>')
 
 
+def check_rendered(html_body, plain_body, weather, picks, extras, quote, horoscope):
+    """Compare what was assembled against what actually came out.
+
+    Every section here reaches the email through a different argument, and a
+    missing one renders as a clean absence rather than an error — the about lines
+    once reached the page and not the inbox, and nothing complained. This is the
+    tripwire for that whole class of mis-wiring.
+    """
+    missing = []
+    if weather and str(weather["periods"][0]["temp"]) not in html_body:
+        missing.append("weather")
+    if quote and quote[:30] not in html_body:
+        missing.append("quote")
+    if horoscope and horoscope["text"][:30] not in html_body:
+        missing.append("horoscope")
+    for name, rows in (("picks", picks), ("extras", extras)):
+        if rows and not any((r.get("title") or "")[:30] in html_body for r in rows):
+            missing.append(name)
+    want = sum(1 for x in (extras or []) if x.get("about"))
+    got = sum(1 for x in (extras or []) if x.get("about") and x["about"][:30] in html_body)
+    log.info("email: %d bullets, %d picks, %d extras (%d with an about line, %d rendered)",
+             plain_body.count("\n- ") or plain_body.count("- "), len(picks or []),
+             len(extras or []), want, got)
+    if want and not got:
+        missing.append("every about line")
+    if missing:
+        log.warning("email is missing what was built for it: %s", ", ".join(missing))
+    return missing
+
+
 def send_mail(subject, body, html_body=None):
     pw = os.environ.get("SMTP_PASSWORD")
     if not pw:
@@ -1354,7 +1384,7 @@ def main():
         meta = (f"{today['local']:%A, %B} {today['local'].day} \u00b7 {today['clock']}"
                 if today else "")
         wx_line, link = weather_summary(weather), episode_link(stamp)
-        send_mail(title,
+        plain_body = (
                   torrents_mail(fresh_picks).lstrip("\n")
                   + (f"\n\n{wx_line}" if wx_line else "")
                   + (f"\n\n{quote}" if quote else "")
@@ -1362,9 +1392,11 @@ def main():
                      if horoscope else "")
                   + f"\n\n{points}"
                   + extras_mail(extra_rows)
-                  + f"\n\nListen: {link}",
-                  email_html(title, points, weather, fresh_picks, link, quote, meta, extra_rows,
-                             horoscope))
+                  + f"\n\nListen: {link}")
+        html_body = email_html(title, points, weather, fresh_picks, link, quote, meta,
+                               extra_rows, horoscope)
+        check_rendered(html_body, plain_body, weather, fresh_picks, extra_rows, quote, horoscope)
+        send_mail(title, plain_body, html_body)
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
         # made it in, so a silently absent section is visible without digging.
