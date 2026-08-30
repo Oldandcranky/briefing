@@ -124,6 +124,7 @@ def plain(s):
 
 
 def keywords(title):
+    """The distinctive words of a headline: function words and short tokens removed."""
     return {w for w in re.findall(r"[a-z0-9]+", title.lower()) if len(w) > 2 and w not in STOP}
 
 
@@ -539,6 +540,12 @@ def weather_summary(w):
 
 
 def build_digest(path, items, weather=None):
+    """Write the markdown source NotebookLM reads, grouped by feed.
+
+    The forecast goes first so the hosts open with it. Each story carries its
+    full article text where extraction worked, and the feed's own summary where
+    it did not.
+    """
     lines = [f"# Briefing for {datetime.now():%A %d %B %Y}"]
     if weather:
         # First in the digest so the hosts open with it.
@@ -659,6 +666,7 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
 
 
 def prune():
+    """Delete episodes past keep_episodes, and every sidecar that belongs to them."""
     for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
         for ext in (".txt", ".title", ".sources", ".weather", ".torrents", ".quote",
                     ".extras", ".horoscope"):
@@ -724,6 +732,7 @@ def episodes():
 
 
 def write_feed(eps):
+    """The podcast RSS: one item per episode, newest first, with iTunes durations."""
     base = CFG["feed"]["base_url"].rstrip("/")
     items = [
         f"<item><title>{escape(e['title'])}</title>"
@@ -1218,6 +1227,11 @@ def check_rendered(html_body, plain_body, weather, picks, extras, quote, horosco
 
 
 def send_mail(subject, body, html_body=None):
+    """Send the briefing, HTML with the plain text carried alongside it.
+
+    Never raises: a mail failure is logged and the run still counts as a success,
+    because the episode and the page are already published by this point.
+    """
     pw = os.environ.get("SMTP_PASSWORD")
     if not pw:
         log.warning("SMTP_PASSWORD unset, skipping email")
@@ -1332,6 +1346,30 @@ def ping_healthcheck(ok):
 
 
 def main():
+    """One run of the briefing, start to finish.
+
+    The order matters in a few places:
+
+      1.  Yesterday's digest is rotated aside before today's is built, so it can
+          be attached as a second source and the hosts can lead with what changed.
+      2.  Stories are collected, filtered by age, folded for duplicates, and
+          checked against the ledger of what has already aired.
+      3.  They split into spoken and read-only. Article bodies are fetched only
+          for the spoken ones — fetching before the split spent the budget on
+          links that appear solely in the email.
+      4.  NotebookLM builds the episode, then writes the notes, the title and the
+          quote. It is the slow step and the only one that can take ten minutes.
+      5.  Sidecars are written, then read straight back with episodes(). The email
+          and the page both render from that one episode, so a section cannot
+          reach one surface and miss the other.
+      6.  Only a finished episode is committed to the ledger, so a failed run
+          does not burn stories it never covered.
+
+    Every optional part — weather, horoscope, picks, quote — degrades to an
+    absent section rather than a failed run. A failure anywhere else emails the
+    error with the tail of the log attached and exits non-zero, which is what the
+    scheduler and the dead-man's switch both notice.
+    """
     stamp = f"{datetime.now():%Y-%m-%d}"
     audio, digest = OUT / f"{stamp}.m4a", OUT / "digest.md"
     started = datetime.now()
