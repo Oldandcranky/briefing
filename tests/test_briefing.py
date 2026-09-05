@@ -739,6 +739,23 @@ good = b.email_html(mk_ep(weather=WX, torrents=PICKS, quote=QUOTE, extras=EXR,
 cap2.msgs.clear()
 missing = b.check_rendered(good, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
 check("a complete email trips nothing", missing == [], missing)
+# Real copy has apostrophes and ampersands, which html.escape rewrites. Comparing
+# raw needles against an escaped body made the watchdog report a horoscope that was
+# plainly there — a false alarm is worse than no alarm.
+SPICY_Q = "Rules are now mere suggestions, apparently & obviously."
+SPICY_H = {"sign": "S", "glyph": "", "text": "Kindness you've shown may pay off, dearest archer."}
+SPICY_X = [{"title": "owner/repo & co", "feed": "GitHub Trending",
+            "link": "https://gh.example/1", "about": "Doesn't do what you'd expect & that's fine."}]
+spicy = b.email_html(mk_ep(weather=WX, torrents=PICKS, quote=SPICY_Q, extras=SPICY_X,
+                           horoscope=SPICY_H), "https://e.com/")
+check("escaped text still counts as present",
+      b.check_rendered(spicy, "- A note.", WX, PICKS, SPICY_X, SPICY_Q, SPICY_H) == [],
+      b.check_rendered(spicy, "- A note.", WX, PICKS, SPICY_X, SPICY_Q, SPICY_H))
+cap2.msgs.clear()
+b.check_rendered(spicy, "- A note.", WX, PICKS, SPICY_X, SPICY_Q, SPICY_H)
+check("and its about line is counted as rendered",
+      any("(1 with an about line, 1 rendered)" in m for _, m in cap2.msgs),
+      [m for _, m in cap2.msgs])
 check("the tripwire reports what it counted",
       any("with an about line" in m for _, m in cap2.msgs), [m for _, m in cap2.msgs])
 

@@ -1154,18 +1154,24 @@ def check_rendered(html_body, plain_body, weather, picks, extras, quote, horosco
     once reached the page and not the inbox, and nothing complained. This is the
     tripwire for that whole class of mis-wiring.
     """
+    def present(needle):
+        # The needle is raw text; the body has been through html.escape, so an
+        # apostrophe or ampersand would never match literally. Accept either form
+        # — a watchdog that cries wolf is worse than no watchdog.
+        return bool(needle) and (needle in html_body or html.escape(needle) in html_body)
+
     missing = []
-    if weather and str(weather["periods"][0]["temp"]) not in html_body:
+    if weather and not present(str(weather["periods"][0]["temp"])):
         missing.append("weather")
-    if quote and quote[:30] not in html_body:
+    if quote and not present(quote[:30]):
         missing.append("quote")
-    if horoscope and horoscope["text"][:30] not in html_body:
+    if horoscope and not present(horoscope["text"][:30]):
         missing.append("horoscope")
     for name, rows in (("picks", picks), ("extras", extras)):
-        if rows and not any((r.get("title") or "")[:30] in html_body for r in rows):
+        if rows and not any(present((r.get("title") or "")[:30]) for r in rows):
             missing.append(name)
     want = sum(1 for x in (extras or []) if x.get("about"))
-    got = sum(1 for x in (extras or []) if x.get("about") and x["about"][:30] in html_body)
+    got = sum(1 for x in (extras or []) if x.get("about") and present(x["about"][:30]))
     log.info("email: %d bullets, %d picks, %d extras (%d with an about line, %d rendered)",
              plain_body.count("\n- ") or plain_body.count("- "), len(picks or []),
              len(extras or []), want, got)
