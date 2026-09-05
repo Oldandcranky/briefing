@@ -138,6 +138,19 @@ back the previous commit for several minutes after a push.
 `docker-compose.yml` is reported but never overwritten: the volume paths belong
 to the host, not the repo.
 
+Nor does the script deploy itself — bash reads a script as it executes, so
+overwriting the running file can make it resume at the wrong byte. Instead it
+reports its own drift and stages the new copy as `deploy.sh.new`, to be swapped
+in once the run has finished:
+
+```bash
+mv deploy.sh.new deploy.sh
+```
+
+This matters more than it sounds: a stale `deploy.sh` checks the host's config
+with yesterday's rules, and will happily block a deploy over a key the code no
+longer uses.
+
 ## Scheduling
 
 Any cron will do. On Synology, a DSM Task Scheduler task runs the container

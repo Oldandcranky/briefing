@@ -69,6 +69,20 @@ if ! diff -q docker-compose.yml "$SRC/docker-compose.yml" >/dev/null 2>&1; then
     diff docker-compose.yml "$SRC/docker-compose.yml" | sed 's/^/          /' || true
 fi
 
+# This script does not deploy itself. Bash reads a script as it executes, so
+# overwriting the running file mid-run can make it resume at the wrong byte.
+# Stage the new one beside it and let the operator swap it when nothing is running.
+SELF="$DEPLOY_DIR/deploy.sh"
+if [ -f "$SELF" ] && ! diff -q "$SELF" "$SRC/deploy.sh" >/dev/null 2>&1; then
+    cp "$SRC/deploy.sh" "$SELF.new" && chmod +x "$SELF.new"
+    bad "deploy.sh itself is out of date ($(diff "$SELF" "$SRC/deploy.sh" | grep -c '^[<>]') lines differ)"
+    note "a running script cannot safely overwrite itself, so the new one is staged as"
+    note "deploy.sh.new — install it once this run has finished:"
+    note "    mv $SELF.new $SELF"
+else
+    rm -f "$SELF.new"
+fi
+
 say "Candidate image"
 CAND="briefing:candidate-${SHA:0:12}"
 "$DOCKER" build -q -t "$CAND" "$SRC" >/dev/null
@@ -81,7 +95,8 @@ ok "suite passed against the image that would ship"
 
 say "This host's config, against the new code"
 if [ -n "${CONFIG_FILE:-}" ] && [ -f "$CONFIG_FILE" ]; then
-    "$DOCKER" run --rm -e BRIEFING_OUT=/tmp/out -e BRIEFING_CONFIG=/tmp/config.yaml \
+    if ! CFG_OUT=$("$DOCKER" run --rm -e BRIEFING_OUT=/tmp/out \
+        -e BRIEFING_CONFIG=/tmp/config.yaml \
         -v "$CONFIG_FILE:/tmp/config.yaml:ro" "$CAND" python -c "
 import briefing as b
 assert b.CFG['feeds'], 'no feeds configured'
@@ -93,7 +108,14 @@ print('%d feeds, %d bullets, %sh window, %sd ledger, keep %d' % (
     len(b.CFG['feeds']), b.CFG.get('bullets', 12),
     b.CFG.get('max_age_hours', 48), b.CFG.get('ledger_days', 7),
     b.CFG['feed']['keep_episodes']))
-" 2>/dev/null | sed 's/^/        /'
+" 2>&1); then
+        # Whatever went wrong, say so. Hiding this behind /dev/null once turned a
+        # stale assertion in this script into a deploy that stopped with no reason given.
+        printf '%s\n' "$CFG_OUT" | tail -5 | sed 's/^/        /'
+        bad "$CONFIG_FILE does not satisfy the new code"
+        exit 1
+    fi
+    printf '%s\n' "$CFG_OUT" | sed 's/^/        /'
     ok "$CONFIG_FILE still satisfies the new code"
 else
     bad "config not found (set CONFIG_FILE=...); skipping this check"
