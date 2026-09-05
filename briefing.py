@@ -102,6 +102,17 @@ def jparse(out):
     return json.loads(out[out.index("{"):])
 
 
+def unmark(text):
+    """Strip NotebookLM's citation and markdown litter from a line of prose.
+
+    Shared by the notes, the title and the quote: all three come back from the same
+    model and carry the same debris, and the quote once shipped a raw **bold** to the
+    inbox because only the notes were being cleaned.
+    """
+    text = CITE.sub("", text or "").replace("\\$", "$").replace("**", "")
+    return re.sub(r"\*([^*]+)\*", r"\1", text).strip()
+
+
 def clean(answer):
     """Keep only bullet lines; drops NotebookLM's trailing follow-up offers."""
     lines = []
@@ -112,9 +123,7 @@ def clean(answer):
         if not re.match(r"^([-*•]|\d+[.)])\s", s):
             continue
         s = re.sub(r"^([-*•]|\d+[.)])\s*", "", s)      # normalise every marker to "- "
-        s = CITE.sub("", s).replace("\\$", "$").replace("**", "")
-        s = re.sub(r"\*([^*]+)\*", r"\1", s)           # markdown emphasis reads as litter
-        lines.append(f"- {s.strip()}")
+        lines.append(f"- {unmark(s)}")
     return "\n".join(lines)
 
 
@@ -600,8 +609,8 @@ def episode_title(nb, stamp, points):
         answer = jparse(run("ask", "A title for this episode: at most eight words, naming "
                             "the biggest stories. No quotes, no preamble.",
                             "-n", nb, "--json")).get("answer", "")
-        title = next((ln.strip(" \"'*.#") for ln in answer.splitlines() if ln.strip()), "")
-        title = CITE.sub("", title).strip(" \"'*.#")
+        title = unmark(next((ln.strip(" \"'*.#") for ln in answer.splitlines() if ln.strip()), ""))
+        title = title.strip(" \"'*.#")
     except Exception:
         log.warning("title ask failed", exc_info=True)
     if not title or len(title) > 80:
@@ -624,8 +633,7 @@ def episode_quote(nb):
     except Exception:
         log.warning("quote ask failed", exc_info=True)
         return ""
-    line = next((l.strip(" \"'*-#") for l in answer.splitlines() if l.strip()), "")
-    line = CITE.sub("", line).strip()
+    line = unmark(next((l.strip(" \"'*-#") for l in answer.splitlines() if l.strip()), ""))
     if not line:
         log.info("quote: empty answer, skipping the section")
         return ""

@@ -144,6 +144,21 @@ check("range citations stripped", "[1-3]" not in c and "[4–6]" not in c)
 check("emphasis stripped", "*Rocky" not in c and "The Rocky Horror Picture Show" in c)
 check("kept every bullet", len(c.splitlines()) == 4, f"{len(c.splitlines())}")
 
+# The quote shipped a raw **bold** to the inbox: only the notes were being cleaned,
+# though all three come back from the same model with the same debris.
+REAL = ("Elon Musk defended the **Twitter trademark** in court by proving X still "
+        "begrudgingly lists itself as *the* platform [1].")
+check("bold stripped from prose", "**" not in b.unmark(REAL) and "Twitter trademark" in b.unmark(REAL))
+check("italics stripped too", "*the*" not in b.unmark(REAL) and " the platform" in b.unmark(REAL))
+check("citations stripped by the same pass", "[1]" not in b.unmark(REAL))
+check("unmark is safe on empty input", b.unmark("") == "" and b.unmark(None) == "")
+b.run = lambda *a: json.dumps({"answer": REAL})
+check("the quote comes out clean", "**" not in b.episode_quote("nb"), b.episode_quote("nb"))
+b.run = lambda *a: json.dumps({"answer": "**Nvidia** buys *Hugging Face* [2]"})
+check("the title comes out clean",
+      b.episode_title("nb", "2026-08-26", "- x") == "Aug 26 '26 · Nvidia buys Hugging Face",
+      b.episode_title("nb", "2026-08-26", "- x"))
+
 section("urls and identity")
 check("utm noise collapses",
       b.canonical_url("https://www.bbc.co.uk/news/a1?utm_source=rss#top")
