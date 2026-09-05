@@ -806,19 +806,24 @@ section("episode title")
 b.run = lambda *a: json.dumps({"answer": "Fed cuts rates, Taiwan braces for typhoon [1-3]"})
 check("uses the ask, citations stripped",
       b.episode_title("nb", "2026-08-26", "- x") ==
-      "2026-08-26 · Fed cuts rates, Taiwan braces for typhoon")
+      "Aug 26 '26 · Fed cuts rates, Taiwan braces for typhoon")
 def boom(*a):
     raise RuntimeError("ask failed")
 b.run = boom
 check("falls back to the first bullet whole",
       b.episode_title("nb", "2026-08-26", "- Fed cuts rates amid cooling inflation\n- x")
-      == "2026-08-26 · Fed cuts rates amid cooling inflation")
+      == "Aug 26 '26 · Fed cuts rates amid cooling inflation")
 check("long bullet trimmed at a word boundary",
       b.episode_title("nb", "2026-08-26", "- " + "word " * 40).endswith("word…"))
-check("falls back to the date", b.episode_title("nb", "2026-08-26", "") == "Briefing 2026-08-26")
+check("falls back to the date",
+      b.episode_title("nb", "2026-08-26", "") == "Briefing Aug 26 '26")
+check("short date reads as month, day, short year", b.short_date("2026-09-05") == "Sep 5 '26")
+check("no leading zero on the day", b.short_date("2026-01-01") == "Jan 1 '26")
+check("december is Dec", b.short_date("2026-12-25") == "Dec 25 '26")
+check("a stamp it cannot parse is passed through", b.short_date("not-a-date") == "not-a-date")
 b.run = lambda *a: json.dumps({"answer": "x" * 200})
 check("over-long title rejected",
-      b.episode_title("nb", "2026-08-26", "- Short bullet") == "2026-08-26 · Short bullet")
+      b.episode_title("nb", "2026-08-26", "- Short bullet") == "Aug 26 '26 · Short bullet")
 
 section("the page")
 for stem, title in [("2026-08-24", "2026-08-24 · Older briefing"),
@@ -833,7 +838,10 @@ page = (OUT / "index.html").read_text()
 check("a briefing exists because its notes file does", len(eps) == 3, f"{len(eps)}")
 check("keep_episodes respected", page.count("<article") == 3)
 check("page escapes titles", "Fed &amp; Taiwan" in page and "Fed & Taiwan" not in page)
-check("untitled briefing falls back", "Briefing 2026-08-25" in page)
+# The page escapes the apostrophe in "'26" to &#x27;, which renders correctly;
+# the email subject uses the title raw, so it shows the apostrophe as typed.
+check("untitled briefing falls back",
+      __import__("html").escape("Briefing Aug 25 '26") in page)
 check("bullets become list items", page.count("<li>point one</li>") == 3)
 check("bullet markers stripped", "<li>- point" not in page)
 check("episode anchors", "id='2026-08-26'" in page)

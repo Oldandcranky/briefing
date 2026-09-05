@@ -584,6 +584,15 @@ def rotate_digest(digest, prev):
     return prev
 
 
+def short_date(stamp):
+    """2026-09-05 -> Sep 5 '26. Reads better in a subject line than an ISO date."""
+    try:
+        d = datetime.strptime(stamp, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return stamp
+    return f"{d:%b} {d.day} '{d:%y}"
+
+
 def episode_title(nb, stamp, points):
     """Headline for the episode; falls back to the first bullet, then to the bare date."""
     title = ""
@@ -598,7 +607,7 @@ def episode_title(nb, stamp, points):
     if not title or len(title) > 80:
         first = re.sub(r"^([-*•]|\d+[.)])\s*", "", points.splitlines()[0] if points else "")
         title = first if len(first) <= 60 else first[:60].rsplit(" ", 1)[0] + "…"
-    return f"{stamp} · {title}" if title else f"Briefing {stamp}"
+    return f"{short_date(stamp)} · {title}" if title else f"Briefing {short_date(stamp)}"
 
 
 def episode_quote(nb):
@@ -696,7 +705,8 @@ def episodes():
         out.append({
             "stem": f.stem, "file": f,
             "local": datetime.fromtimestamp(f.stat().st_mtime),
-            "title": titled.read_text().strip() if titled.exists() else f"Briefing {f.stem}",
+            "title": (titled.read_text().strip() if titled.exists()
+                      else f"Briefing {short_date(f.stem)}"),
             "notes": f.read_text().strip(),
             "quote": qfile.read_text().strip() if qfile.exists() else "",
             "sources": load(f.with_suffix(".sources"), []),
