@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily news briefing: RSS -> NotebookLM audio overview -> podcast feed + email."""
+"""Daily news briefing: RSS -> NotebookLM write-up -> web page + email."""
 import calendar
 import concurrent.futures as futures
 import gzip
@@ -39,9 +39,9 @@ UA = "Mozilla/5.0 (compatible; briefing/1.0)"
 WEATHER_NOTE = (" Open with the local weather outlook at the top of the digest \u2014 a"
                 " sentence or two, conversational, then move into the news.")
 
-# Appended to the audio prompt when yesterday's digest is attached as a second source.
+# Appended to the bullets ask when yesterday's digest is attached as a second source.
 DELTA_NOTE = (" Yesterday's digest is attached as a second source: lead with what is new or "
-              "has moved since then, and don't re-tell stories that haven't changed.")
+              "has moved since then, and skip stories that haven't changed.")
 
 # NotebookLM's source citations: [1], [1, 2], [1-3].
 CITE = re.compile(r"\s*\[\d+(?:\s*[-–,]\s*\d+)*\]")
@@ -627,8 +627,14 @@ def episode_quote(nb):
     return line
 
 
-def make_episode(digest, prev, audio_path, stamp, weather=None):
-    """Fresh notebook per run so there's never a stale audio artifact. Deleted after."""
+def write_up(digest, prev, stamp):
+    """Ask NotebookLM to read the digest and write the briefing.
+
+    A fresh notebook per run, deleted afterwards, so there is never a stale
+    artifact to pick up by mistake. Returns the notes, a headline title and a
+    one-line quote; the title and quote fall back gracefully, the notes do not,
+    because without them there is no briefing.
+    """
     nb = jparse(run("create", f"briefing-{stamp}", "--json"))["notebook"]["id"]
     log.info("notebook %s", nb)
     try:
@@ -638,25 +644,16 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
         if not jparse(run("metadata", "--json", "-n", nb)).get("sources"):
             raise RuntimeError("source add reported success but notebook has no sources")
 
-        a = CFG["audio"]
         t0 = datetime.now()
-        log.info("generating audio (format=%s length=%s)", a["format"], a["length"])
-        prompt = (random.choice(a["prompts"]) + (WEATHER_NOTE if weather else "")
-                  + (DELTA_NOTE if prev else ""))
-        run("generate", "audio", prompt,
-            "-n", nb, "--format", a["format"],
-            "--length", a["length"], "--wait", "--timeout", "1500", "--retry", "3")
-        log.info("audio generated in %ds", (datetime.now() - t0).seconds)
-
-        run("download", "audio", str(audio_path), "-n", nb, "--force")
-        size = audio_path.stat().st_size if audio_path.exists() else 0
-        if size < 100_000:
-            raise RuntimeError(f"audio missing or too small ({size} bytes): {audio_path}")
-        log.info("audio %s (%.1f MB)", audio_path.name, size / 1e6)
-
-        points = run("ask", f"{CFG.get('bullets', 12)} bullet points, one line each, covering "
-                     "the most important stories. No preamble.", "-n", nb, "--json")
-        points = clean(jparse(points).get("answer", ""))
+        ask = (f"{CFG.get('bullets', 12)} bullet points, one line each, covering the most "
+               "important stories. No preamble.")
+        if prev:
+            ask += DELTA_NOTE
+        points = clean(jparse(run("ask", ask, "-n", nb, "--json")).get("answer", ""))
+        if not points:
+            raise RuntimeError("NotebookLM returned no usable bullet points")
+        log.info("write-up: %d bullets in %ds", len(points.splitlines()),
+                 (datetime.now() - t0).seconds)
         return points, episode_title(nb, stamp, points), episode_quote(nb)
     finally:
         try:
@@ -665,90 +662,49 @@ def make_episode(digest, prev, audio_path, stamp, weather=None):
             log.exception("cleanup failed, notebook %s left behind", nb)
 
 
+STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def prune():
-    """Delete episodes past keep_episodes, and every sidecar that belongs to them."""
-    for f in sorted(OUT.glob("*.m4a"), reverse=True)[CFG["feed"]["keep_episodes"]:]:
-        for ext in (".txt", ".title", ".sources", ".weather", ".torrents", ".quote",
-                    ".extras", ".horoscope"):
+    """Delete briefings past keep_episodes, and every sidecar that belongs to them."""
+    days = sorted((f for f in OUT.glob("*.txt") if STAMP.match(f.stem)), reverse=True)
+    for f in days[CFG["feed"]["keep_episodes"]:]:
+        for ext in (".title", ".sources", ".weather", ".torrents", ".quote", ".extras",
+                    ".horoscope", ".m4a"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
-        log.info("pruned %s", f.name)
-
-
-def duration(path):
-    """Seconds from the MP4 mvhd atom. Returns 0 if not found."""
-    with path.open("rb") as fh:          # usually near the start; avoid slurping the whole file
-        d = fh.read(2_000_000)
-        i = d.find(b"mvhd")
-        if i < 0:
-            d = d + fh.read()
-            i = d.find(b"mvhd")
-    if i < 0:
-        return 0
-    if d[i + 4] == 0:
-        scale, dur = int.from_bytes(d[i+16:i+20], "big"), int.from_bytes(d[i+20:i+24], "big")
-    else:
-        scale, dur = int.from_bytes(d[i+24:i+28], "big"), int.from_bytes(d[i+28:i+36], "big")
-    return dur // scale if scale else 0
+        log.info("pruned %s", f.stem)
 
 
 def episodes():
-    """Newest first, capped at keep_episodes — the shared source for feed.xml and index.html."""
+    """Newest first, capped at keep_episodes — the one shape both surfaces render from.
+
+    A briefing exists if its notes file does. Everything else is a sidecar that may or
+    may not be there, and each renders as an absent section rather than an error.
+    """
+    def load(path, default):
+        try:
+            return json.loads(path.read_text()) if path.exists() else default
+        except json.JSONDecodeError:
+            log.warning("unreadable sidecar: %s", path.name)
+            return default
+
     out = []
-    for f in sorted(OUT.glob("*.m4a"), reverse=True)[: CFG["feed"]["keep_episodes"]]:
-        notes, titled, srcs = f.with_suffix(".txt"), f.with_suffix(".title"), f.with_suffix(".sources")
-        wx, tor = f.with_suffix(".weather"), f.with_suffix(".torrents")
-        qfile, extra = f.with_suffix(".quote"), f.with_suffix(".extras")
-        horo = f.with_suffix(".horoscope")
-        secs = duration(f)
-        try:
-            sources = json.loads(srcs.read_text()) if srcs.exists() else []
-        except json.JSONDecodeError:
-            log.warning("unreadable sources sidecar: %s", srcs.name)
-            sources = []
-        try:
-            weather = json.loads(wx.read_text()) if wx.exists() else None
-        except json.JSONDecodeError:
-            log.warning("unreadable weather sidecar: %s", wx.name)
-            weather = None
-        try:
-            torrents = json.loads(tor.read_text()) if tor.exists() else []
-        except json.JSONDecodeError:
-            log.warning("unreadable torrents sidecar: %s", tor.name)
-            torrents = []
+    days = sorted((f for f in OUT.glob("*.txt") if STAMP.match(f.stem)), reverse=True)
+    for f in days[: CFG["feed"]["keep_episodes"]]:
+        titled, qfile = f.with_suffix(".title"), f.with_suffix(".quote")
         out.append({
-            "sources": sources, "weather": weather, "torrents": torrents,
-            "quote": qfile.read_text().strip() if qfile.exists() else "",
-            "extras": json.loads(extra.read_text()) if extra.exists() else [],
-            "horoscope": json.loads(horo.read_text()) if horo.exists() else None,
-            "file": f, "size": f.stat().st_size, "secs": secs,
-            "when": datetime.fromtimestamp(f.stat().st_mtime, timezone.utc),
-            # RSS wants UTC; the page should show the day the episode is named for.
+            "stem": f.stem, "file": f,
             "local": datetime.fromtimestamp(f.stat().st_mtime),
             "title": titled.read_text().strip() if titled.exists() else f"Briefing {f.stem}",
-            "notes": notes.read_text().strip() if notes.exists() else "",
-            "clock": f"{secs//3600:02d}:{secs//60%60:02d}:{secs%60:02d}"})
+            "notes": f.read_text().strip(),
+            "quote": qfile.read_text().strip() if qfile.exists() else "",
+            "sources": load(f.with_suffix(".sources"), []),
+            "weather": load(f.with_suffix(".weather"), None),
+            "torrents": load(f.with_suffix(".torrents"), []),
+            "extras": load(f.with_suffix(".extras"), []),
+            "horoscope": load(f.with_suffix(".horoscope"), None)})
     return out
-
-
-def write_feed(eps):
-    """The podcast RSS: one item per episode, newest first, with iTunes durations."""
-    base = CFG["feed"]["base_url"].rstrip("/")
-    items = [
-        f"<item><title>{escape(e['title'])}</title>"
-        f"<itunes:duration>{e['clock']}</itunes:duration>"
-        f"<description>{escape(e['notes'])}</description>"
-        f"<enclosure url='{base}/{e['file'].name}' length='{e['size']}' type='audio/mp4'/>"
-        f"<guid isPermaLink='false'>{e['file'].stem}</guid>"
-        f"<pubDate>{format_datetime(e['when'])}</pubDate></item>" for e in eps]
-    title = escape(CFG["feed"]["title"])
-    (OUT / "feed.xml").write_text(
-        "<?xml version='1.0' encoding='UTF-8'?>"
-        "<rss version='2.0' xmlns:itunes='http://www.itunes.com/dtds/podcast-1.0.dtd'>"
-        f"<channel><title>{title}</title><link>{base}/</link>"
-        f"<description>{title}</description><language>en-us</language>"
-        f"{''.join(items)}</channel></rss>")
-    log.info("feed: %d episodes", len(eps))
 
 
 def weather_block(w, esc):
@@ -839,7 +795,7 @@ def horoscope_block(h, esc):
 
 
 def extras_block(extras, esc, expanded=False):
-    """Feeds kept out of the audio, grouped by source. Reading matter, not listening."""
+    """Feeds NotebookLM never reads, grouped by source. Links to skim, not summarised."""
     if not extras:
         return ""
     by_feed = {}
@@ -859,7 +815,7 @@ def extras_block(extras, esc, expanded=False):
         out.append(f"<details class=torrents{' open' if expanded else ''}>"
                    f"<summary>{len(group)} from {esc(feed)}</summary>"
                    f"<ul class=tlist>{''.join(rows)}</ul></details>")
-    return (f"<div class=extras><h3>Not in the podcast episode</h3>{''.join(out)}</div>")
+    return (f"<div class=extras><h3>Not in the summary</h3>{''.join(out)}</div>")
 
 
 def torrents_block(picks, esc, expanded=False):
@@ -925,7 +881,7 @@ def note_links(notes, sources):
 
 
 def write_index(eps):
-    """A plain listening page served alongside feed.xml. No assets, no external requests."""
+    """The briefing page. No assets, no external requests, nothing to install."""
     esc = html.escape
     cards = []
     for n, e in enumerate(eps):
@@ -949,15 +905,14 @@ def write_index(eps):
         cards.append(
             f"<article id='{esc(e['file'].stem)}'>"
             f"<h2>{esc(e['title'])}</h2>"
-            f"<p class=meta>{e['local']:%A, %B} {e['local'].day} · {e['clock']}</p>"
-            f"<audio controls preload=none src='{esc(e['file'].name)}'></audio>"
+            f"<p class=meta>{e['local']:%A, %B} {e['local'].day}</p>"
             + torrents_block(e.get("torrents"), esc, expanded=(n == 0))
             + weather_block(e.get("weather"), esc)
             + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
             + horoscope_block(e.get("horoscope"), esc)
             + (f"<ul>{points}</ul>" if points else "")
             + extras_block(e.get("extras"), esc, expanded=(n == 0))
-            + f"<p class=dl><a href='{esc(e['file'].name)}'>Download m4a</a></p></article>")
+            + "</article>")
     (OUT / "index.html").write_text(f"""<!doctype html>
 <html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -1019,11 +974,8 @@ h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
 .wx-next b {{ font-size:.76rem; }}
 .wx-next span {{ font-size:.72rem; color:var(--dim); }}
 .wx-next em {{ font-size:.78rem; font-style:normal; color:var(--fg); }}
-audio {{ width:100%; height:38px; }}
 ul {{ margin:1rem 0 0; padding-left:1.15rem; }}
 li {{ margin:.3rem 0; }}
-.dl {{ margin:.9rem 0 0; font-size:.82rem; }}
-.dl a {{ color:var(--dim); }}
 
 summary:hover {{ color:var(--fg); }}
 details h3 {{ font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
@@ -1032,9 +984,7 @@ details h3 {{ font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
 </style>
 <header>
 <h1>{esc(CFG['feed']['title'])}</h1>
-<p>{len(eps)} episode{'s' if len(eps) != 1 else ''} ·
-<a href="feed.xml">Subscribe via RSS</a> — paste this page's URL + <code>/feed.xml</code>
-into any podcast app.</p>
+<p>{len(eps)} briefing{'s' if len(eps) != 1 else ''}, newest first.</p>
 </header>
 {''.join(cards) or '<p>No episodes yet.</p>'}
 </html>
@@ -1054,7 +1004,7 @@ def email_html(ep, link):
     weather, picks = ep.get("weather"), ep.get("torrents") or []
     quote, extras = ep.get("quote") or "", ep.get("extras") or []
     horoscope = ep.get("horoscope")
-    meta = f"{ep['local']:%A, %B} {ep['local'].day} \u00b7 {ep['clock']}"
+    meta = f"{ep['local']:%A, %B} {ep['local'].day}"
     esc = html.escape
     ink, dim, line = "#1c1b19", "#6b6862", "#e6e2db"
     accent, card, page = "#8a5a2b", "#ffffff", "#f4f2ee"
@@ -1153,7 +1103,7 @@ def email_html(ep, link):
                       f'padding-top:16px">'
                       f'<div style="font-size:11px;letter-spacing:.08em;'
                       f'text-transform:uppercase;color:{dim};font-weight:600;'
-                      f'padding:0 0 12px">Not in the podcast episode</div>'
+                      f'padding:0 0 12px">Not in the summary</div>'
                       f'{"".join(chunks)}</div>')
 
     return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
@@ -1179,7 +1129,7 @@ def email_html(ep, link):
             f'<div style="padding-top:24px">'
             f'<a href="{esc(link)}" style="background:{accent};color:#fff;text-decoration:none;'
             f'font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;'
-            f'display:inline-block">Listen to the episode</a></div>'
+            f'display:inline-block">Open the briefing page</a></div>'
             f'</td></tr></table></td></tr></table></body></html>')
 
 
@@ -1193,7 +1143,7 @@ def email_plain(ep, link):
             + (f"\n\n{h['sign']}: {h['text']}" if h else "")
             + f"\n\n{ep.get('notes') or ''}"
             + extras_mail(ep.get("extras") or [])
-            + f"\n\nListen: {link}")
+            + f"\n\nFull briefing: {link}")
 
 
 def check_rendered(html_body, plain_body, weather, picks, extras, quote, horoscope):
@@ -1270,11 +1220,10 @@ def banner():
         log.info("notebooklm cli: %s", ((p.stdout or p.stderr).strip() or "no version")[:120])
     except Exception as ex:
         log.warning("notebooklm cli not runnable: %s", type(ex).__name__)
-    a = CFG["audio"]
     log.info("config %s: %d feeds, max_per_feed=%s, window=%sh, ledger=%sd, bullets=%s, "
-             "audio=%s/%s, keep=%s", CFG_PATH, len(CFG["feeds"]), CFG["max_per_feed"],
+             "keep=%s", CFG_PATH, len(CFG["feeds"]), CFG["max_per_feed"],
              CFG.get("max_age_hours", 48), CFG.get("ledger_days", 7), CFG.get("bullets", 12),
-             a["format"], a["length"], CFG["feed"]["keep_episodes"])
+             CFG["feed"]["keep_episodes"])
     # Degraded modes are silent by design elsewhere; say them out loud here.
     log.info("full_text=%s | smtp=%s | healthcheck=%s | syslog=%s",
              f"on (trafilatura {trafilatura.__version__})" if trafilatura else "OFF (trafilatura missing)",
@@ -1309,7 +1258,7 @@ def torrents_mail(picks):
 
 
 def extras_mail(extras):
-    """Plain-text tail for feeds kept out of the audio."""
+    """Plain-text tail for feeds NotebookLM never reads."""
     if not extras:
         return ""
     by_feed = {}
@@ -1366,12 +1315,13 @@ def main():
           does not burn stories it never covered.
 
     Every optional part — weather, horoscope, picks, quote — degrades to an
-    absent section rather than a failed run. A failure anywhere else emails the
+    absent section rather than a failed run. The notes are the exception: without
+    them there is no briefing, so that failure is fatal and mails you the reason. A failure anywhere else emails the
     error with the tail of the log attached and exits non-zero, which is what the
     scheduler and the dead-man's switch both notice.
     """
     stamp = f"{datetime.now():%Y-%m-%d}"
-    audio, digest = OUT / f"{stamp}.m4a", OUT / "digest.md"
+    digest = OUT / "digest.md"
     started = datetime.now()
     log.info("=== run start %s ===", stamp)
     banner()
@@ -1387,14 +1337,14 @@ def main():
         picks = fetch_torrents()
         fresh_picks = unseen_torrents(picks, tledger, tdays)[: tcfg.get("max_shown", 15)]
         items = collect_items(blocked)
-        # Some feeds are worth reading but not worth listening to: kept out of the
-        # digest entirely, so NotebookLM never sees them and the hosts never mention
-        # them, but still shown in the email and on the page.
+        # Some feeds are worth a link but not worth summarising: kept out of the
+        # digest entirely, so NotebookLM never sees them, but still listed in the
+        # email and on the page.
         quiet = set(CFG.get("exclude_from_digest") or [])
         spoken = [i for i in items if i["feed"] not in quiet]
         extras = [i for i in items if i["feed"] in quiet]
         if quiet:
-            log.info("excluded from the audio: %d stories from %s",
+            log.info("excluded from the summary: %d stories from %s",
                      len(extras), ", ".join(sorted(quiet)) or "nothing")
         if not spoken:
             raise RuntimeError("every collected story is excluded from the digest; "
@@ -1404,7 +1354,7 @@ def main():
         # email, and left the digest as a list of one-line RSS blurbs.
         add_full_text(spoken)
         build_digest(digest, spoken, weather)
-        points, title, quote = make_episode(digest, prev, audio, stamp, weather)
+        points, title, quote = write_up(digest, prev, stamp)
         (OUT / f"{stamp}.txt").write_text(points)
         (OUT / f"{stamp}.title").write_text(title)
         if quote:
@@ -1439,11 +1389,10 @@ def main():
         # and the page cannot disagree, and a sidecar that failed to write is missing
         # from both rather than from one.
         eps = episodes()
-        write_feed(eps)
         write_index(eps)
-        today = next((e for e in eps if e["file"] == audio), None)
+        today = next((e for e in eps if e["stem"] == stamp), None)
         if today is None:
-            raise RuntimeError(f"{audio.name} is missing from the episode list")
+            raise RuntimeError(f"{stamp} is missing from the briefing list")
         link = episode_link(stamp)
         html_body, plain_body = email_html(today, link), email_plain(today, link)
         check_rendered(html_body, plain_body, weather, fresh_picks, extra_rows, quote,
@@ -1453,14 +1402,10 @@ def main():
         # One line describing the whole run: every optional part says whether it
         # made it in, so a silently absent section is visible without digging.
         log.info("=== run ok in %.1f min: %d stories, %d with article text, %d bullets, "
-                 "weather %s, %d new picks, quote %s, %s (%.1f MB, %s) ===",
+                 "weather %s, %d new picks, quote %s, %d read-only ===",
                  mins, len(items), sum(1 for i in items if i["text"]),
-                 len(points.splitlines()),
-                 "ok" if weather else "MISSING",
-                 len(fresh_picks),
-                 "ok" if quote else "none",
-                 audio.name, audio.stat().st_size / 1e6,
-                 next((e["clock"] for e in eps if e["file"] == audio), "?"))
+                 len(points.splitlines()), "ok" if weather else "MISSING",
+                 len(fresh_picks), "ok" if quote else "none", len(extra_rows))
         ping_healthcheck(ok=True)
     except Exception as ex:
         mins = (datetime.now() - started).total_seconds() / 60

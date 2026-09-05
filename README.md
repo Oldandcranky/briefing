@@ -2,49 +2,47 @@
 
 [![CI](https://github.com/Oldandcranky/briefing/actions/workflows/ci.yml/badge.svg)](https://github.com/Oldandcranky/briefing/actions/workflows/ci.yml)
 
-A self-hosted daily news podcast: pulls headlines from RSS feeds, has
-[NotebookLM](https://notebooklm.google.com) generate an audio overview of them,
-and publishes the result as a podcast feed plus an email digest.
+A self-hosted daily news briefing: pulls headlines from RSS feeds, fetches the
+articles behind them, has [NotebookLM](https://notebooklm.google.com) read the lot
+and write it up, and publishes the result as a web page and an email.
 
 Each run:
 
-1. Fetches the local forecast, which opens the episode, the email and the page.
+1. Fetches the local forecast, which opens the email and the page.
 2. Pulls the configured RSS feeds, drops anything older than `max_age_hours`
    (and anything undated), skips stories already aired in the last
    `ledger_days`, and folds near-duplicate headlines together — so a story
    three outlets ran gets covered once, and is treated as one of the day's big
    ones.
 3. Fetches the full article text for the top stories (not just the RSS blurb)
-   so the hosts have something to actually talk about. Pages that extract to
+   so the write-up has something to work from. Pages that extract to
    nothing — a Reddit comment thread has no article body — are replaced by
    reaching further down the ranking, up to `full_text.max_attempts`.
 4. Builds a markdown digest, keeping yesterday's alongside it as a second
-   source so the episode leads with what has *changed*.
-5. Creates a fresh NotebookLM notebook, uploads both, and generates an audio
-   overview (the notebook is deleted afterwards, even on failure).
-6. Downloads the episode, then asks NotebookLM for `bullets` show notes, a
-   headline title naming the day's biggest stories, and one wry line for the
+   source so the write-up leads with what has *changed*.
+5. Creates a fresh NotebookLM notebook, uploads both, and asks it for
+   `bullets` show notes, a headline title naming the day's biggest stories,
+   and one wry line for the
    email and page. That last prompt is steered at the lighter end of the news
    on purpose — a joke about the day's body count is not a joke — and an empty
    or over-long answer is dropped rather than printed.
-7. Prunes old episodes, then rewrites `feed.xml` (RSS with iTunes duration
-   tags) and `index.html` — a listening page following the same order as the
-   email: player, new picks, forecast, quote, notes. Each note carries a small
+6. Prunes old briefings, then rewrites `index.html`, which follows the same
+   order as the email: new picks, forecast, quote, notes. Each note carries a small
    ↗ to the article it most likely came from; NotebookLM reports no provenance,
    so that link is inferred from shared distinctive words and is omitted rather
    than guessed when the match is weak. Picks are expanded on the newest
-   episode only; on older ones they fold away, since what was new four days ago
-   no longer is. Both are plain files for any static web
-   server; the page loads no external assets, and story links are escaped and
-   restricted to http(s), since feed contents are untrusted.
-8. Emails an HTML briefing — new picks, the forecast, the quote, the notes and
-   a link to the episode, in that order — with the plain-text version carried
+   briefing only; on older ones they fold away, since what was new four days
+   ago no longer is. It is a plain file for any static web server, loads no
+   external assets, and story links are escaped and restricted to http(s),
+   since feed contents are untrusted.
+7. Emails an HTML briefing — new picks, the forecast, the quote, the notes and
+   a link to the page, in that order — with the plain-text version carried
    alongside it. Or the error, if the run failed.
 
 An optional `torrents` section fetches a listing page behind a session cookie,
 shows only entries missing from `torrents-seen.jsonl`, and adds them to the
 email and the page. It is deliberately kept out of the digest, so it never
-reaches NotebookLM and the hosts never mention it.
+reaches NotebookLM and is never summarised.
 
 Designed to run on a schedule in Docker on a Synology NAS, but nothing about it
 is Synology-specific.
@@ -75,13 +73,10 @@ live Google session credentials (`auth/` is gitignored here).
 Copy `config.yaml.example` to `config.yaml` in the output directory (the volume
 mounted at `/data`; override with `BRIEFING_CONFIG`). It sets the feeds, how
 many articles to fetch in full (`full_text.count`, with `workers` kept low for
-modest hardware), the audio prompts/format/length, the podcast title and public
-`base_url`, how many episodes to keep, and the email addresses/SMTP host. It is
+modest hardware), the page title and public
+`base_url`, how many briefings to keep, and the email addresses/SMTP host. It is
 read at runtime from the mounted volume, so edits take effect on the next run
 without a rebuild.
-
-`audio.prompts` is a **list** — one is picked at random each run, which keeps
-the show from opening the same way every morning.
 
 Secrets and host settings come from the environment — put them in `.env` next
 to `docker-compose.yml` (gitignored):
@@ -107,15 +102,14 @@ The compose file mounts two host paths — adjust them to your layout:
 
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
-- the output dir → `/data`: `config.yaml`, episodes (`.m4a` plus `.txt` show
+- the output dir → `/data`: `config.yaml`, briefings (`.txt` show
   notes, `.title`, `.sources`, `.weather`, `.torrents` and `.quote`
-  sidecars), `digest.md`,
-  `digest-yesterday.md`, `aired.jsonl`, `torrents-seen.jsonl`, `feed.xml`,
+  and `.extras` sidecars), `digest.md`,
+  `digest-yesterday.md`, `aired.jsonl`, `torrents-seen.jsonl`,
   `index.html`, `briefing.log`
 
 Serve the output dir over HTTPS (e.g. `tailscale serve`, nginx, or the NAS's
-web station) at `feed.base_url`. Point your podcast app at
-`<base_url>/feed.xml`, or just open `<base_url>/` to listen in a browser.
+web station) at `feed.base_url`, then open `<base_url>/` to read it.
 
 ## Deploying
 
@@ -133,7 +127,7 @@ all without touching anything. Drop `--check` to actually swap and rebuild.
 
 Nothing is replaced until all three pass. The config check is the one CI can't
 do: CI only ever sees `config.yaml.example`, while the host has its own feeds,
-prompts and settings, and a renamed key would otherwise surface at 6am as a
+feeds and settings, and a renamed key would otherwise surface at 6am as a
 failed run. Each deploy backs up the previous `briefing.py` and prints its
 rollback command; a failed rebuild rolls back on its own.
 
@@ -162,15 +156,15 @@ set, your syslog server. Failures also trigger the email with the error.
 ## Not repeating yourself
 
 Two mechanisms, deliberately different in kind. Yesterday's digest is attached
-to the notebook as a second source, which *asks* the hosts to lead with what
+to the notebook as a second source, which *asks* the write-up to lead with what
 changed — a soft nudge, and an LLM given a fresh context each morning will
 cheerfully re-run yesterday's headline anyway. So `aired.jsonl` in the output
-dir is the hard gate: every story that made it into an episode is recorded, and
+dir is the hard gate: every story that made it into a briefing is recorded, and
 for `ledger_days` afterwards it can't come back.
 
 Identity is the article's canonical URL — query strings and `www.` stripped —
 rather than its headline. That is the point: a developing story publishes a new
-article each day at a new URL, so follow-ups still air, while the same piece
+article each day at a new URL, so follow-ups still run, while the same piece
 sitting in a feed for three days is only ever covered once.
 
 ## Tests

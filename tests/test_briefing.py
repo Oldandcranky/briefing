@@ -57,11 +57,11 @@ sys.path.insert(0, str(ROOT))
 import briefing as b  # noqa: E402
 
 def mk_ep(title="T", notes="- A note.", weather=None, torrents=None, quote="",
-          extras=None, horoscope=None, clock="00:01:40"):
+          extras=None, horoscope=None):
     """An episode of the shape episodes() returns, for rendering tests."""
     return {"title": title, "notes": notes, "weather": weather,
             "torrents": torrents or [], "quote": quote, "extras": extras or [],
-            "horoscope": horoscope, "clock": clock,
+            "horoscope": horoscope,
             "local": datetime(2026, 8, 29, 5, 45)}
 
 
@@ -497,7 +497,7 @@ check("that episode comes from episodes()",
 check("the page renders from the same list",
       _main_flat.index("eps = episodes()") < _main_flat.index("write_index(eps)"))
 check("a missing episode is an error, not a silent empty email",
-      "is missing from the episode list" in _main_src)
+      "is missing from the briefing list" in _main_src)
 b.CFG.pop("torrents")
 
 section("html email")
@@ -594,8 +594,8 @@ mail = b.email_html(mk_ep(extras=EX), "https://e.com/")
 check("email carries the extras", "owner/repo-one" in mail and "GitHub Trending" in mail)
 check("email extras sit after the notes",
       mail.index("A note.") < mail.index("owner/repo-one"))
-check("email extras appear before the listen button",
-      mail.index("owner/repo-one") < mail.index("Listen to the episode"))
+check("email extras appear before the page button",
+      mail.index("owner/repo-one") < mail.index("Open the briefing page"))
 check("no extras means no email section", "GitHub Trending" not in
       b.email_html(mk_ep(), "https://e.com/"))
 txt = b.extras_mail(EX)
@@ -785,22 +785,6 @@ check("stale digest skipped",
       b.rotate_digest(digest, prev) is None and not digest.exists() and not prev.exists())
 check("missing digest safe", b.rotate_digest(digest, prev) is None)
 
-section("duration")
-def mvhd_v0(scale, dur, pad=0):
-    return (b"\x00" * pad + b"mvhd" + b"\x00" * 12 + scale.to_bytes(4, "big")
-            + dur.to_bytes(4, "big"))
-def mvhd_v1(scale, dur):
-    return (b"mvhd" + b"\x01\x00\x00\x00" + b"\x00" * 16 + scale.to_bytes(4, "big")
-            + dur.to_bytes(8, "big"))
-f = OUT / "2026-08-24.m4a"; f.write_bytes(mvhd_v0(1000, 900_000))
-check("v0 mvhd", b.duration(f) == 900)
-g = OUT / "2026-08-25.m4a"; g.write_bytes(mvhd_v1(600, 540_000))
-check("v1 mvhd", b.duration(g) == 900)
-h = OUT / "2026-08-26.m4a"; h.write_bytes(mvhd_v0(1000, 61_000, pad=2_500_000))
-check("mvhd past the 2MB read", b.duration(h) == 61)
-n = OUT / "2026-08-23.m4a"; n.write_bytes(b"\x00" * 500)
-check("no mvhd is zero, not a crash", b.duration(n) == 0)
-
 section("episode title")
 b.run = lambda *a: json.dumps({"answer": "Fed cuts rates, Taiwan braces for typhoon [1-3]"})
 check("uses the ask, citations stripped",
@@ -819,42 +803,31 @@ b.run = lambda *a: json.dumps({"answer": "x" * 200})
 check("over-long title rejected",
       b.episode_title("nb", "2026-08-26", "- Short bullet") == "2026-08-26 · Short bullet")
 
-section("feed and page")
-for stem, title in [("2026-08-24", "2026-08-24 · Older show"),
+section("the page")
+for stem, title in [("2026-08-24", "2026-08-24 · Older briefing"),
+                    ("2026-08-25", ""),
                     ("2026-08-26", "2026-08-26 · Fed & Taiwan")]:
     (OUT / f"{stem}.txt").write_text("- point one\n- point two")
-    (OUT / f"{stem}.title").write_text(title)
+    if title:
+        (OUT / f"{stem}.title").write_text(title)
 eps = b.episodes()
-b.write_feed(eps)
 b.write_index(eps)
-xml = (OUT / "feed.xml").read_text()
 page = (OUT / "index.html").read_text()
-check("custom title used", "<title>2026-08-26 · Fed &amp; Taiwan</title>" in xml)
-check("ampersand escaped in feed", "Fed &amp; Taiwan" in xml and "Fed & Taiwan" not in xml)
-check("untitled episode falls back", "<title>Briefing 2026-08-25</title>" in xml)
-check("duration tag", "<itunes:duration>00:15:00</itunes:duration>" in xml)
-check("keep_episodes respected", xml.count("<item>") == 3)
-try:
-    ET.fromstring(xml)
-    wf = True
-except ET.ParseError as ex:
-    wf = False
-    print("   ", ex)
-check("feed is well-formed XML", wf)
-check("page lists episodes", page.count("<article") == 3)
-check("page has players", page.count("<audio controls") == 3)
+check("a briefing exists because its notes file does", len(eps) == 3, f"{len(eps)}")
+check("keep_episodes respected", page.count("<article") == 3)
 check("page escapes titles", "Fed &amp; Taiwan" in page and "Fed & Taiwan" not in page)
-check("bullets become list items", page.count("<li>point one</li>") == 2)
+check("untitled briefing falls back", "Briefing 2026-08-25" in page)
+check("bullets become list items", page.count("<li>point one</li>") == 3)
 check("bullet markers stripped", "<li>- point" not in page)
 check("episode anchors", "id='2026-08-26'" in page)
-check("email links to the page, not the audio",
-      b.episode_link("2026-08-26") == "https://example.com/briefing/#2026-08-26",
-      b.episode_link("2026-08-26"))
+check("email links to the page", b.episode_link("2026-08-26")
+      == "https://example.com/briefing/#2026-08-26", b.episode_link("2026-08-26"))
 # Story links are external by design; assets must never be, or the page breaks
 # offline and leaks a request to whoever hosts them.
 check("no remote assets", not re.search(r"<(img|script|iframe)[^>]+src=['\"]?https?://", page)
       and not re.search(r"<link[^>]+href=['\"]?https?://", page))
-check("audio stays relative", "src='2026-08-26.m4a'" in page)
+check("no audio player left on the page", "<audio" not in page and ".m4a" not in page)
+check("no podcast feed is written", not (OUT / "feed.xml").exists())
 
 section("note source links")
 # Calibrated on a real run: correct pairings shared 3+ distinctive words,
@@ -1073,9 +1046,9 @@ for ext in (".quote", ".weather", ".horoscope", ".torrents", ".extras"):
 
 section("prune")
 b.prune()
-check("oldest audio dropped", not (OUT / "2026-08-23.m4a").exists())
+check("oldest briefing dropped", not (OUT / "2026-08-23.txt").exists())
 check("newest kept with sidecars",
-      (OUT / "2026-08-26.m4a").exists() and (OUT / "2026-08-26.title").exists())
+      (OUT / "2026-08-26.txt").exists() and (OUT / "2026-08-26.title").exists())
 
 if LIVE:
     section("live feeds (network)")

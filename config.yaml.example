@@ -15,8 +15,8 @@ max_per_feed: 8
 undated_ok:
   - GitHub Trending
 
-# Feeds worth reading but not worth listening to. These never enter the digest, so
-# NotebookLM never sees them and the hosts never mention them — they appear only in
+# Feeds worth a link but not worth summarising. These never enter the digest, so
+# NotebookLM never sees them — they appear only in
 # the email and on the page. They still pass through dedup and the ledger, so you
 # are not shown the same thing twice.
 exclude_from_digest:
@@ -53,7 +53,7 @@ full_text:
 
 # Optional. A listing page behind a session cookie, diffed against a local history
 # so only entries you haven't been shown before appear. It goes in the email and on
-# the page ONLY — never into the digest, so it stays out of the audio. Omit to skip.
+# the page ONLY — never into the digest, so it is never summarised. Omit to skip.
 # torrents:
 #   url: https://tracker.example/t
 #   section: "Staff Picks"     # the table heading to read
@@ -68,17 +68,10 @@ full_text:
 #   sign: sagittarius
 #   sentences: 2
 
-audio:
-  prompts:               # one is picked at random each run
-    - "Two hosts, brisk news briefing, no filler. Lead with what changed today."
-    - "Two hosts, morning news rundown. Group related stories, skip the chit-chat."
-  format: brief          # deep-dive | brief | critique | debate
-  length: short          # short | default | long
-
 feed:
   title: Daily Briefing
   base_url: https://example.com/briefing   # public URL where the output dir is served
-  keep_episodes: 14      # older episodes are deleted
+  keep_episodes: 14      # older briefings are deleted
 
 email:
   to: you@example.com
