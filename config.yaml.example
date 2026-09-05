@@ -7,6 +7,7 @@ feeds:
   BBC World: https://feeds.bbci.co.uk/news/world/rss.xml
 
 max_per_feed: 8
+keep_episodes: 14      # older briefings are deleted
 
 # Feeds regenerated daily carry no per-entry dates — a "trending today" listing is
 # today's by construction. Name those here and the freshness window takes them at
@@ -67,11 +68,6 @@ full_text:
 # horoscope:
 #   sign: sagittarius
 #   sentences: 2
-
-feed:
-  title: Daily Briefing
-  base_url: https://example.com/briefing   # public URL where the output dir is served
-  keep_episodes: 14      # older briefings are deleted
 
 email:
   to: you@example.com

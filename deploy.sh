@@ -100,14 +100,13 @@ if [ -n "${CONFIG_FILE:-}" ] && [ -f "$CONFIG_FILE" ]; then
         -v "$CONFIG_FILE:/tmp/config.yaml:ro" "$CAND" python -c "
 import briefing as b
 assert b.CFG['feeds'], 'no feeds configured'
-assert b.CFG['feed']['base_url'], 'feed.base_url missing'
-assert b.CFG['feed']['keep_episodes'] > 0, 'keep_episodes must be positive'
+assert int(b.CFG.get('keep_episodes', 14)) > 0, 'keep_episodes must be positive'
 assert b.CFG['email']['to'], 'email.to missing'
 assert int(b.CFG.get('bullets', 12)) > 0, 'bullets must be positive'
 print('%d feeds, %d bullets, %sh window, %sd ledger, keep %d' % (
     len(b.CFG['feeds']), b.CFG.get('bullets', 12),
     b.CFG.get('max_age_hours', 48), b.CFG.get('ledger_days', 7),
-    b.CFG['feed']['keep_episodes']))
+    b.CFG.get('keep_episodes', 14)))
 " 2>&1); then
         # Whatever went wrong, say so. Hiding this behind /dev/null once turned a
         # stale assertion in this script into a deploy that stopped with no reason given.

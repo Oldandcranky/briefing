@@ -42,10 +42,7 @@ audio:
   prompts: ["Two hosts, brisk news briefing."]
   format: brief
   length: short
-feed:
-  title: Test Briefing
-  base_url: https://example.com/briefing/
-  keep_episodes: 3
+keep_episodes: 3
 email:
   to: a@example.com
   from: b@example.com
@@ -387,17 +384,15 @@ check("digest leads with weather, before the news",
 check("digest names the location", "Huntley, IL 60142" in dtext)
 check("digest carries the detail line", "Patchy fog before 8am." in dtext)
 
-esc = __import__("html").escape
-blk = b.weather_block(b.fetch_weather(), esc)
-check("page block renders the temperature", "81<sup>&deg;F</sup>" in blk, blk[:90])
-check("page block shows later periods", blk.count("wx-next") == 2)
-check("page block flags precipitation", "18% precip" not in blk and "wx-strip" in blk)
-check("no weather means no block", b.weather_block(None, esc) == "")
+wmail = b.email_html(mk_ep(weather=b.fetch_weather()))
+check("email shows the temperature", "81&deg;" in wmail, wmail[:0] or "no 81 in email")
+check("email shows the later periods", wmail.count("33%") >= 2)
+check("no weather means no weather block", "&deg;" not in b.email_html(mk_ep()))
 hostile = {"label": "<script>x</script>", "periods": [
     {"name": "Today", "temp": 1, "unit": "F", "day": True, "wind": "", "short": "<b>bad</b>",
      "precip": 5, "detail": "d"}]}
-hb = b.weather_block(hostile, esc)
-check("weather text is escaped", "<script>" not in hb and "&lt;script&gt;" in hb)
+hmail = b.email_html(mk_ep(weather=hostile))
+check("weather text is escaped", "<script>" not in hmail and "&lt;script&gt;" in hmail)
 _u.urlopen = real_urlopen
 
 section("torrents")
@@ -465,18 +460,16 @@ check("a dead tracker is not fatal", b.fetch_torrents() == [])
 _u.urlopen = _real
 os.environ.pop("TEST_COOKIE", None)
 
-esc = __import__("html").escape
 b.CFG["torrents"]["link_base"] = "https://tracker.example"
-blk = b.torrents_block(fresh, esc)
-check("page section lists the new pick", "Brand New Release-TEAM" in blk)
-check("page section links to the tracker", "href='https://tracker.example/t/999999'" in blk)
-check("page section shows age and seeders", "5 minutes ago" in blk and "3 seeders" in blk)
-check("nothing new means no section", b.torrents_block([], esc) == "")
+pmail = b.email_html(mk_ep(torrents=fresh))
+check("email lists the new pick", "Brand New Release-TEAM" in pmail)
+check("email links to the tracker", 'href="https://tracker.example/t/999999"' in pmail)
+check("email shows age and seeders", "5 minutes ago" in pmail and "3 seeders" in pmail)
+check("nothing new means no picks section", "new pick" not in b.email_html(mk_ep()))
 nasty = [{"id": "1", "path": "/t/1", "title": "<img src=x onerror=alert(1)>",
           "age": "1 hour ago", "seeders": 1, "leechers": 0}]
-check("torrent titles are escaped",
-      "<img src=x" not in b.torrents_block(nasty, esc)
-      and "&lt;img" in b.torrents_block(nasty, esc))
+nmail = b.email_html(mk_ep(torrents=nasty))
+check("torrent titles are escaped", "<img src=x" not in nmail and "&lt;img" in nmail)
 mail = b.torrents_mail(fresh)
 check("email tail names the pick", "Brand New Release-TEAM" in mail)
 check("email tail carries the link", "https://tracker.example/t/999999" in mail)
@@ -506,11 +499,10 @@ _main_flat = " ".join(_main_src.split())
 # Both surfaces now render from the episode read back off disk, so there is one
 # producer and no second path to mis-wire.
 check("the email renders from the episode list, not from loose variables",
-      "email_html(today, link)" in _main_flat and "email_plain(today, link)" in _main_flat)
+      "email_html(today)" in _main_flat and "email_plain(today)" in _main_flat)
 check("that episode comes from episodes()",
       _main_flat.index("eps = episodes()") < _main_flat.index("today = next("))
-check("the page renders from the same list",
-      _main_flat.index("eps = episodes()") < _main_flat.index("write_index(eps)"))
+check("no page is written any more", "write_index" not in _main_flat)
 check("a missing episode is an error, not a silent empty email",
       "is missing from the briefing list" in _main_src)
 b.CFG.pop("torrents")
@@ -524,24 +516,24 @@ _u.urlopen = real_urlopen
 pts = "- First story happened.\n- Second story happened."
 tp = [{"id": "1", "path": "/t/1", "title": "Some Release-TEAM", "age": "3 hours ago",
        "seeders": 616, "leechers": 5}]
-mail = b.email_html(mk_ep(title="2026-08-28 \u00b7 A Title", notes=pts, weather=wx, torrents=tp),
-                    "https://example.com/#2026-08-28")
+mail = b.email_html(mk_ep(title="Aug 28 '26 \u00b7 A Title", notes=pts, weather=wx,
+                          torrents=tp))
 check("renders every bullet", mail.count("<li") == 3, f"{mail.count('<li')}")
 check("bullet markers stripped", "<li" in mail and ">- First" not in mail)
 check("weather shown", "81&deg;" in mail and "Huntley, IL 60142" in mail)
-check("listen button links to the page", 'href="https://example.com/#2026-08-28"' in mail)
+check("nothing links back to a server", "briefing page" not in mail
+      and "feed.xml" not in mail and "index.html" not in mail)
 check("new picks section present", "Some Release-TEAM" in mail and "616 seeders" in mail)
 check("picks link to the tracker", 'href="https://tracker.example/t/1"' in mail)
 check("no external images or scripts",
       "<img" not in mail and "<script" not in mail and "http://" not in mail)
 check("styles are inline, not a stylesheet", "<style" not in mail and "class=" not in mail)
 nasty_title = '<script>alert(1)</script> & "quotes"'
-m2 = b.email_html(mk_ep(title=nasty_title, notes="- <b>bold</b> attempt", weather=wx),
-                  "https://e.com/")
+m2 = b.email_html(mk_ep(title=nasty_title, notes="- <b>bold</b> attempt", weather=wx))
 check("subject line content escaped", "<script>" not in m2 and "&lt;script&gt;" in m2)
 check("bullet content escaped", "<b>bold</b>" not in m2 and "&lt;b&gt;bold" in m2)
 check("no picks means no picks section", "new pick" not in m2)
-m3 = b.email_html(mk_ep(notes=pts), "https://e.com/")
+m3 = b.email_html(mk_ep(notes=pts))
 check("no weather means no weather block", "&deg;" not in m3)
 check("html is balanced",
       m3.count("<table") == m3.count("</table>") and m3.count("<ul") == m3.count("</ul>"))
@@ -579,13 +571,12 @@ b.CFG["weather"] = {"lat": 1, "lon": 2, "label": "Huntley, IL", "periods": 4}
 _u.urlopen = fake_urlopen
 wxq = b.fetch_weather()
 _u.urlopen = real_urlopen
-mailq = b.email_html(mk_ep(notes="- One story.", weather=wxq, quote="A dry little line."),
-                     "https://e.com/")
+mailq = b.email_html(mk_ep(notes="- One story.", weather=wxq, quote="A dry little line."))
 check("email carries the quote", "A dry little line." in mailq)
 check("email quote sits between weather and the notes",
       mailq.index("81&deg;") < mailq.index("A dry little line.") < mailq.index("One story."))
 check("no quote means no quote block", "font-style:italic" not in
-      b.email_html(mk_ep(notes="- One story.", weather=wxq), "https://e.com/"))
+      b.email_html(mk_ep(notes="- One story.", weather=wxq)))
 b.CFG.pop("weather")
 
 check("prune sweeps the quote sidecar", ".quote" in __import__("inspect").getsource(b.prune))
@@ -594,25 +585,24 @@ section("feeds kept out of the audio")
 EX = [{"title": "owner/repo-one", "feed": "GitHub Trending", "link": "https://gh.example/1"},
       {"title": "owner/repo-two", "feed": "GitHub Trending", "link": "javascript:alert(1)"}]
 esc2 = __import__("html").escape
-blk = b.extras_block(EX, esc2, expanded=True)
-check("extras render grouped by feed", "2 from GitHub Trending" in blk, blk[:70])
-check("extras link out", "href='https://gh.example/1'" in blk)
-check("an unsafe extras link is not linked", "javascript:" not in blk)
-check("extras open on the newest episode", "<details class=torrents open>" in blk)
-check("collapsed on older episodes", " open>" not in b.extras_block(EX, esc2, expanded=False))
-check("no extras means no block", b.extras_block([], esc2) == "")
+xmail = b.email_html(mk_ep(extras=EX))
+check("extras grouped by feed", "GitHub Trending" in xmail)
+check("extras link out", 'href="https://gh.example/1"' in xmail)
+check("an unsafe extras link is not linked", "javascript:" not in xmail)
+check("no extras means no section", "GitHub Trending" not in b.email_html(mk_ep()))
 nasty = [{"title": "<img src=x onerror=1>", "feed": "Evil & Co", "link": ""}]
+nxmail = b.email_html(mk_ep(extras=nasty))
 check("extras titles and feed names escaped",
-      "&lt;img" in b.extras_block(nasty, esc2) and "Evil &amp; Co" in b.extras_block(nasty, esc2))
+      "&lt;img" in nxmail and "Evil &amp; Co" in nxmail)
 
-mail = b.email_html(mk_ep(extras=EX), "https://e.com/")
+mail = b.email_html(mk_ep(extras=EX))
 check("email carries the extras", "owner/repo-one" in mail and "GitHub Trending" in mail)
 check("email extras sit after the notes",
       mail.index("A note.") < mail.index("owner/repo-one"))
-check("email extras appear before the page button",
-      mail.index("owner/repo-one") < mail.index("Open the briefing page"))
+check("email extras come after the notes",
+      mail.index("A note.") < mail.index("owner/repo-one"))
 check("no extras means no email section", "GitHub Trending" not in
-      b.email_html(mk_ep(), "https://e.com/"))
+      b.email_html(mk_ep()))
 txt = b.extras_mail(EX)
 check("plain text lists them", "owner/repo-one" in txt and "GitHub Trending (2)" in txt)
 check("plain text omits unsafe links", "javascript:" not in txt)
@@ -639,10 +629,8 @@ check("about line is truncated at a word boundary",
       len(long_about) <= 161 and long_about.endswith("\u2026"), f"{len(long_about)}")
 EXA = [{"title": "owner/repo", "feed": "GitHub Trending", "link": "https://gh.example/1",
         "about": "Does a useful thing, quickly."}]
-check("page shows the about line", "Does a useful thing, quickly." in b.extras_block(EXA, esc2))
 check("email shows the about line",
-      "Does a useful thing, quickly." in
-      b.email_html(mk_ep(notes="- n", extras=EXA), "https://e.com/"))
+      "Does a useful thing, quickly." in b.email_html(mk_ep(notes="- n", extras=EXA)))
 check("plain text shows the about line", "Does a useful thing, quickly." in b.extras_mail(EXA))
 section("hacker news api")
 HN_URL = "https://news.ycombinator.com/item?id=49492632"
@@ -676,8 +664,8 @@ check("an existing about line is left alone",
 _u.urlopen = _hn_real
 
 check("an about line is escaped",
-      "&lt;img" in b.extras_block([{"title": "t", "feed": "f", "link": "",
-                                    "about": "<img src=x>"}], esc2))
+      "&lt;img" in b.email_html(mk_ep(extras=[{"title": "t", "feed": "f", "link": "",
+                                               "about": "<img src=x>"}])))
 
 section("horoscope")
 HORO = {"sign": "sagittarius", "date": "2026-08-29",
@@ -706,32 +694,31 @@ check("unconfigured means no horoscope", b.fetch_horoscope() is None)
 b.CFG["horoscope"] = _saved
 _u.urlopen = _h_real
 
-esc3 = __import__("html").escape
-hb = b.horoscope_block({"sign": "Sagittarius", "glyph": "\u2650",
-                        "text": "Rest today.", "date": ""}, esc3)
-check("page block labels the sign", "\u2650 Sagittarius" in hb and "Rest today." in hb)
-check("page block is styled as an aside", "class=horoscope" in hb and "class=hsign" in hb)
-check("no horoscope means no block", b.horoscope_block(None, esc3) == "")
+hb = b.email_html(mk_ep(horoscope={"sign": "Sagittarius", "glyph": "\u2650",
+                                   "text": "Rest today."}))
+check("email labels the sign", "\u2650 Sagittarius" in hb and "Rest today." in hb)
+check("no horoscope means no block", "Sagittarius" not in b.email_html(mk_ep()))
 check("horoscope text is escaped",
-      "&lt;img" in b.horoscope_block({"sign": "S", "glyph": "", "text": "<img src=x>"}, esc3))
+      "&lt;img" in b.email_html(mk_ep(horoscope={"sign": "S", "glyph": "",
+                                                 "text": "<img src=x>"})))
 mail_h = b.email_html(mk_ep(quote="A quote.",
                             horoscope={"sign": "Sagittarius", "glyph": "\u2650",
-                                       "text": "Rest today."}), "https://e.com/")
+                                       "text": "Rest today."}))
 check("email carries the horoscope", "Rest today." in mail_h)
 check("email horoscope sits under the quote",
       mail_h.index("A quote.") < mail_h.index("Rest today.") < mail_h.index("A note."))
 check("no horoscope means no email block",
-      "Rest today." not in b.email_html(mk_ep(notes="- n", quote="q"), "https://e.com/"))
+      "Rest today." not in b.email_html(mk_ep(notes="- n", quote="q")))
 
 section("date format")
 import datetime as _dt  # noqa: E402
 _d = _dt.datetime(2026, 8, 29, 5, 45)
 check("meta drops the year", f"{_d:%A, %B} {_d.day}" == "Saturday, August 29",
       f"{_d:%A, %B} {_d.day}")
-check("page meta uses the same shape", "%A, %B} {e['local'].day}" in
-      __import__("inspect").getsource(b.write_index))
-check("no four-digit year in the page meta line",
-      "%Y" not in __import__("inspect").getsource(b.write_index))
+check("the email meta uses the same shape",
+      "%A, %B} {ep['local'].day}" in __import__("inspect").getsource(b.email_html))
+check("no four-digit year in the meta line",
+      "%Y" not in __import__("inspect").getsource(b.email_html))
 
 section("render tripwire")
 _cap = Capture() if "Capture" in dir() else None
@@ -750,7 +737,7 @@ EXR = [{"title": "owner/repo-name", "feed": "GitHub Trending",
 QUOTE, HORO = "A dry little line about today.", {"sign": "S", "glyph": "", "text": "Rest today."}
 
 good = b.email_html(mk_ep(weather=WX, torrents=PICKS, quote=QUOTE, extras=EXR,
-                          horoscope=HORO), "https://e.com/")
+                          horoscope=HORO))
 cap2.msgs.clear()
 missing = b.check_rendered(good, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
 check("a complete email trips nothing", missing == [], missing)
@@ -762,7 +749,7 @@ SPICY_H = {"sign": "S", "glyph": "", "text": "Kindness you've shown may pay off,
 SPICY_X = [{"title": "owner/repo & co", "feed": "GitHub Trending",
             "link": "https://gh.example/1", "about": "Doesn't do what you'd expect & that's fine."}]
 spicy = b.email_html(mk_ep(weather=WX, torrents=PICKS, quote=SPICY_Q, extras=SPICY_X,
-                           horoscope=SPICY_H), "https://e.com/")
+                           horoscope=SPICY_H))
 check("escaped text still counts as present",
       b.check_rendered(spicy, "- A note.", WX, PICKS, SPICY_X, SPICY_Q, SPICY_H) == [],
       b.check_rendered(spicy, "- A note.", WX, PICKS, SPICY_X, SPICY_Q, SPICY_H))
@@ -777,7 +764,7 @@ check("the tripwire reports what it counted",
 # the exact bug: enriched rows computed, raw ones rendered
 raw = [{k: v for k, v in EXR[0].items() if k != "about"}]
 blind = b.email_html(mk_ep(weather=WX, torrents=PICKS, quote=QUOTE, extras=raw,
-                           horoscope=HORO), "https://e.com/")
+                           horoscope=HORO))
 cap2.msgs.clear()
 missing = b.check_rendered(blind, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
 check("dropped about lines are caught", "every about line" in missing, missing)
@@ -790,7 +777,7 @@ for name, args in (("weather", dict(weather=None)), ("quote", dict(quote="")),
     kw.update(args)
     stripped = b.email_html(mk_ep(weather=kw["weather"], torrents=kw["picks"] or [],
                                  quote=kw["quote"], extras=kw["extras"],
-                                 horoscope=kw["horoscope"]), "https://e.com/")
+                                 horoscope=kw["horoscope"]))
     missing = b.check_rendered(stripped, "- A note.", WX, PICKS, EXR, QUOTE, HORO)
     check(f"a missing {name} section is caught", name in missing, missing)
 b.log.removeHandler(cap2)
@@ -840,34 +827,26 @@ b.run = lambda *a: json.dumps({"answer": "x" * 200})
 check("over-long title rejected",
       b.episode_title("nb", "2026-08-26", "- Short bullet") == "Aug 26 '26 · Short bullet")
 
-section("the page")
-for stem, title in [("2026-08-24", "2026-08-24 · Older briefing"),
+section("the archive")
+for stem, title in [("2026-08-24", "Aug 24 '26 · Older briefing"),
                     ("2026-08-25", ""),
-                    ("2026-08-26", "2026-08-26 · Fed & Taiwan")]:
+                    ("2026-08-26", "Aug 26 '26 · Fed & Taiwan")]:
     (OUT / f"{stem}.txt").write_text("- point one\n- point two")
     if title:
         (OUT / f"{stem}.title").write_text(title)
 eps = b.episodes()
-b.write_index(eps)
-page = (OUT / "index.html").read_text()
 check("a briefing exists because its notes file does", len(eps) == 3, f"{len(eps)}")
-check("keep_episodes respected", page.count("<article") == 3)
-check("page escapes titles", "Fed &amp; Taiwan" in page and "Fed & Taiwan" not in page)
-# The page escapes the apostrophe in "'26" to &#x27;, which renders correctly;
-# the email subject uses the title raw, so it shows the apostrophe as typed.
-check("untitled briefing falls back",
-      __import__("html").escape("Briefing Aug 25 '26") in page)
-check("bullets become list items", page.count("<li>point one</li>") == 3)
-check("bullet markers stripped", "<li>- point" not in page)
-check("episode anchors", "id='2026-08-26'" in page)
-check("email links to the page", b.episode_link("2026-08-26")
-      == "https://example.com/briefing/#2026-08-26", b.episode_link("2026-08-26"))
-# Story links are external by design; assets must never be, or the page breaks
-# offline and leaks a request to whoever hosts them.
-check("no remote assets", not re.search(r"<(img|script|iframe)[^>]+src=['\"]?https?://", page)
-      and not re.search(r"<link[^>]+href=['\"]?https?://", page))
-check("no audio player left on the page", "<audio" not in page and ".m4a" not in page)
+check("newest first", [e["stem"] for e in eps][0] == "2026-08-26", [e["stem"] for e in eps])
+check("keep_episodes caps the archive", len(eps) <= 3)
+check("untitled briefing falls back", eps[1]["title"] == "Briefing Aug 25 '26", eps[1]["title"])
+mail = b.email_html(eps[0])
+check("the email escapes titles", "Fed &amp; Taiwan" in mail and "Fed & Taiwan" not in mail)
+check("bullets become list items", mail.count("<li") == 2, f"{mail.count('<li')}")
+check("bullet markers stripped", ">- point" not in mail)
+check("no page is written", not (OUT / "index.html").exists())
 check("no podcast feed is written", not (OUT / "feed.xml").exists())
+check("nothing links back to a server",
+      "briefing page" not in mail and "feed.xml" not in mail)
 
 section("note source links")
 # Calibrated on a real run: correct pairings shared 3+ distinctive words,
@@ -897,22 +876,19 @@ check("empty note is safe", b.match_source("", SRC) is None)
     "- Rwandan genocide life sentence: A Dutch court in The Hague sentenced a former "
     "administrator to life in prison for genocide committed in Rwanda.\n"
     "- GTA VI extended preview: Rockstar debuted a 27-minute gameplay video.")
-b.write_index(b.episodes())
-page = (OUT / "index.html").read_text()
-check("matched note carries a link icon", "class=src-link" in page and "&#8599;" in page)
-check("icon points at the article", "href='https://bbc.example/rwanda'" in page)
+nm = b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
+check("matched note carries a link arrow", "&#8599;" in nm)
+check("arrow points at the article", 'href="https://bbc.example/rwanda"' in nm)
 check("tooltip names outlet and headline",
-      'title="BBC World — Dutch court sentences man to life over Rwanda genocide"' in page)
-check("icon is a real link so it works on touch", "target=_blank" in page)
-check("unmatched note gets no icon", page.count("class=src-link") == 1,
-      f"{page.count('class=src-link')} icons for 2 notes")
-check("the bulk source list is gone", "stories from" not in page and "ul class=src" not in page)
+      'title="BBC World — Dutch court sentences man to life over Rwanda genocide"' in nm)
+check("unmatched note gets no arrow", nm.count("&#8599;") == 1,
+      f"{nm.count('&#8599;')} arrows for 2 notes")
+check("no bulk source list", "stories from" not in nm)
 hostile = [{"title": "Rwanda genocide court sentences man to life",
             "feed": "<script>x</script>", "feeds": [], "link": "javascript:alert(1)"}]
 (OUT / "2026-08-26.sources").write_text(json.dumps(hostile))
-b.write_index(b.episodes())
-page = (OUT / "index.html").read_text()
-check("a javascript: source is never linked", "javascript:" not in page)
+nm = b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
+check("a javascript: source is never linked", "javascript:" not in nm)
 (OUT / "2026-08-26.sources").write_text(json.dumps(SRC))
 
 section("untrusted feed input")
@@ -927,15 +903,14 @@ check("blank url safe to render", b.safe_link("") == "")
       "feed": "Evil & Co", "feeds": ["Evil & Co"], "link": "https://evil.example/a\" onmouseover=\"x"}]))
 (OUT / "2026-08-26.txt").write_text(
     "- Rwandan genocide life sentence: a court sentenced a man to life over the Rwanda genocide.")
-b.write_index(b.episodes())
-hpage = (OUT / "index.html").read_text()
+hmail2 = b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
 check("hostile source title escaped in the tooltip",
-      "<img src=x" not in hpage and "&lt;img" in hpage)
-check("hostile feed name escaped", "Evil &amp; Co" in hpage)
+      "<img src=x" not in hmail2 and "&lt;img" in hmail2)
+check("hostile feed name escaped", "Evil &amp; Co" in hmail2)
 check("quotes in a url cannot break out of the attribute",
-      'onmouseover="x"' not in hpage and "&quot;" in hpage)
-check("tags balanced",
-      all(page.count(f"<{t}") == page.count(f"</{t}>") for t in ("article", "ul", "li", "h2")))
+      'onmouseover="x"' not in hmail2 and "&quot;" in hmail2)
+check("email tags balanced",
+      all(hmail2.count(f"<{t}") == hmail2.count(f"</{t}>") for t in ("ul", "li", "table")))
 
 section("diagnostics")
 import logging  # noqa: E402
@@ -1026,23 +1001,22 @@ check("note_links reports pairs and a count", len(pairs) == 2 and matched == 1, 
     "- Rwandan genocide life sentence: a Dutch court sentenced a man to life over the "
     "Rwanda genocide.\n- Something with no source at all in the list.")
 cap.msgs.clear()
-b.write_index(b.episodes())
+b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
 check("match coverage is logged", any("note sources: 1/2" in m for _, m in cap.msgs),
       [m for _, m in cap.msgs])
 (OUT / "2026-08-26.txt").write_text("- Nothing here resembles any source headline whatsoever.")
 cap.msgs.clear()
-b.write_index(b.episodes())
+b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
 check("a total matching collapse warns",
       any(lv == "WARNING" and "note style" in m for lv, m in cap.msgs), [m for _, m in cap.msgs])
 b.log.removeHandler(cap)
 
-section("one path to both surfaces")
-# Write the sidecars a real run writes, read them back with episodes(), and render
-# both the email and the page from that single episode. This is the shape of the bug
-# where about lines reached the page and not the inbox.
+section("write then read back")
+# Write the sidecars a real run writes, read them back with episodes(), and render the
+# email from that. What is sent is what was archived, not a second copy built in memory.
 RT = "2026-08-26"
 (OUT / f"{RT}.txt").write_text("- Something happened today.")
-(OUT / f"{RT}.title").write_text("2026-08-26 · A Real Title")
+(OUT / f"{RT}.title").write_text("Aug 26 '26 · A Real Title")
 (OUT / f"{RT}.quote").write_text("A dry little line.")
 (OUT / f"{RT}.weather").write_text(json.dumps(
     {"label": "Somewhere", "periods": [{"name": "Today", "temp": 81, "unit": "F",
@@ -1057,24 +1031,18 @@ RT = "2026-08-26"
       "about": "Does a specific useful thing."}]))
 (OUT / f"{RT}.sources").write_text(json.dumps([]))
 
-rt_eps = b.episodes()
-rt = next((e for e in rt_eps if e["file"].stem == RT), None)
-check("the episode is read back off disk", rt is not None)
-b.write_index(rt_eps)
-rt_page = (OUT / "index.html").read_text()
-rt_mail = b.email_html(rt, "https://e.com/#2026-08-26")
-rt_text = b.email_plain(rt, "https://e.com/#2026-08-26")
-
+rt = next((e for e in b.episodes() if e["stem"] == RT), None)
+check("the briefing is read back off disk", rt is not None)
+rt_mail, rt_text = b.email_html(rt), b.email_plain(rt)
 for what, needle in (("the title", "A Real Title"),
                      ("the note", "Something happened today."),
                      ("the quote", "A dry little line."),
                      ("the horoscope", "Rest today."),
                      ("the about line", "Does a specific useful thing."),
-                     ("the extras link", "owner/repo-name")):
+                     ("the extras link", "owner/repo-name"),
+                     ("the pick", "A Release-TEAM"),
+                     ("the forecast", "81")):
     check(f"{what} reaches the email", needle in rt_mail, needle)
-    check(f"{what} reaches the page", needle in rt_page, needle)
-check("the pick reaches both", "A Release-TEAM" in rt_mail and "A Release-TEAM" in rt_page)
-check("the forecast reaches both", "81" in rt_mail and "81" in rt_page)
 check("the plain text carries them too",
       all(x in rt_text for x in ("Something happened today.", "A dry little line.",
                                  "Rest today.", "owner/repo-name")))

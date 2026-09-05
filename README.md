@@ -4,11 +4,12 @@
 
 A self-hosted daily news briefing: pulls headlines from RSS feeds, fetches the
 articles behind them, has [NotebookLM](https://notebooklm.google.com) read the lot
-and write it up, and publishes the result as a web page and an email.
+and write it up, and emails it to you. One email a morning; nothing to host, nothing
+to log in to.
 
 Each run:
 
-1. Fetches the local forecast, which opens the email and the page.
+1. Fetches the local forecast, which opens the email.
 2. Pulls the configured RSS feeds, drops anything older than `max_age_hours`
    (and anything undated), skips stories already aired in the last
    `ledger_days`, and folds near-duplicate headlines together — so a story
@@ -23,26 +24,21 @@ Each run:
 5. Creates a fresh NotebookLM notebook, uploads both, and asks it for
    `bullets` show notes, a headline title naming the day's biggest stories,
    and one wry line for the
-   email and page. That last prompt is steered at the lighter end of the news
+   email. That last prompt is steered at the lighter end of the news
    on purpose — a joke about the day's body count is not a joke — and an empty
    or over-long answer is dropped rather than printed.
-6. Prunes old briefings, then rewrites `index.html`, which follows the same
-   order as the email: new picks, forecast, quote, notes. Each note carries a small
-   ↗ to the article it most likely came from; NotebookLM reports no provenance,
-   so that link is inferred from shared distinctive words and is omitted rather
-   than guessed when the match is weak. Picks are expanded on the newest
-   briefing only; on older ones they fold away, since what was new four days
-   ago no longer is. It is a plain file for any static web server, loads no
-   external assets, and story links are escaped and restricted to http(s),
-   since feed contents are untrusted.
-7. Emails an HTML briefing — new picks, the forecast, the quote, the notes and
-   a link to the page, in that order — with the plain-text version carried
-   alongside it. Or the error, if the run failed.
+6. Prunes old briefings from the archive, then emails an HTML briefing — new
+   picks, the forecast, the quote, the notes — with the plain-text version
+   carried alongside it. Each note carries a small ↗ to the article it most
+   likely came from; NotebookLM reports no provenance, so that link is inferred
+   from shared distinctive words and omitted rather than guessed when the match
+   is weak. Nothing links back to a server: the email is the whole product.
+   Or the error, if the run failed.
 
 An optional `torrents` section fetches a listing page behind a session cookie,
 shows only entries missing from `torrents-seen.jsonl`, and adds them to the
-email and the page. It is deliberately kept out of the digest, so it never
-reaches NotebookLM and is never summarised.
+email. It is deliberately kept out of the digest, so it never reaches NotebookLM
+and is never summarised.
 
 Designed to run on a schedule in Docker on a Synology NAS, but nothing about it
 is Synology-specific.
@@ -73,8 +69,7 @@ live Google session credentials (`auth/` is gitignored here).
 Copy `config.yaml.example` to `config.yaml` in the output directory (the volume
 mounted at `/data`; override with `BRIEFING_CONFIG`). It sets the feeds, how
 many articles to fetch in full (`full_text.count`, with `workers` kept low for
-modest hardware), the page title and public
-`base_url`, how many briefings to keep, and the email addresses/SMTP host. It is
+modest hardware), how many briefings to keep, and the email addresses/SMTP host. It is
 read at runtime from the mounted volume, so edits take effect on the next run
 without a rebuild.
 
@@ -102,14 +97,13 @@ The compose file mounts two host paths — adjust them to your layout:
 
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
-- the output dir → `/data`: `config.yaml`, briefings (`.txt` show
-  notes, `.title`, `.sources`, `.weather`, `.torrents` and `.quote`
-  and `.extras` sidecars), `digest.md`,
-  `digest-yesterday.md`, `aired.jsonl`, `torrents-seen.jsonl`,
-  `index.html`, `briefing.log`
+- the output dir → `/data`: `config.yaml`, the archive of past briefings
+  (`.txt` notes plus `.title`, `.sources`, `.weather`, `.torrents`, `.quote`,
+  `.extras` and `.horoscope` sidecars), `digest.md`, `digest-yesterday.md`,
+  `aired.jsonl`, `torrents-seen.jsonl`, `briefing.log`
 
-Serve the output dir over HTTPS (e.g. `tailscale serve`, nginx, or the NAS's
-web station) at `feed.base_url`, then open `<base_url>/` to read it.
+The output dir needs no web server. It is an archive: the email is delivered, and
+the files are the record of what was sent.
 
 ## Deploying
 
@@ -188,7 +182,7 @@ python tests/test_briefing.py
 
 Runs offline in about a second: feeds are stubbed, NotebookLM is stubbed, and
 everything else — freshness, dedup, the ledger, MP4 duration parsing, feed and
-page generation, pruning — runs for real against a temporary directory. Add
+email rendering, pruning — runs for real against a temporary directory. Add
 `--live` to also fetch the real feeds and extract article text over the
 network.
 

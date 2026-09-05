@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily news briefing: RSS -> NotebookLM write-up -> web page + email."""
+"""Daily news briefing: RSS -> NotebookLM write-up -> email."""
 import calendar
 import concurrent.futures as futures
 import gzip
@@ -685,7 +685,7 @@ STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 def prune():
     """Delete briefings past keep_episodes, and every sidecar that belongs to them."""
     days = sorted((f for f in OUT.glob("*.txt") if STAMP.match(f.stem)), reverse=True)
-    for f in days[CFG["feed"]["keep_episodes"]:]:
+    for f in days[CFG.get("keep_episodes", 14):]:
         for ext in (".title", ".sources", ".weather", ".torrents", ".quote", ".extras",
                     ".horoscope", ".m4a"):
             f.with_suffix(ext).unlink(missing_ok=True)
@@ -708,7 +708,7 @@ def episodes():
 
     out = []
     days = sorted((f for f in OUT.glob("*.txt") if STAMP.match(f.stem)), reverse=True)
-    for f in days[: CFG["feed"]["keep_episodes"]]:
+    for f in days[: CFG.get("keep_episodes", 14)]:
         titled, qfile = f.with_suffix(".title"), f.with_suffix(".quote")
         out.append({
             "stem": f.stem, "file": f,
@@ -725,26 +725,6 @@ def episodes():
     return out
 
 
-def weather_block(w, esc):
-    """The day's outlook, above the notes. Sidecar-driven, so old episodes keep theirs."""
-    if not w:
-        return ""
-    now, rest = w["periods"][0], w["periods"][1:4]
-    rain = f"<span class=pop>{now['precip']}% precip</span>" if now["precip"] else ""
-    later = "".join(
-        f"<div class=wx-next><b>{esc(p['name'])}</b>"
-        f"<span>{esc(p['short'])}</span>"
-        f"<em>{p['temp']}&deg;{'' if p['day'] else ' low'}</em></div>" for p in rest)
-    return (f"<div class=wx><div class=wx-now>"
-            f"<div class=wx-temp>{now['temp']}<sup>&deg;{esc(now['unit'])}</sup></div>"
-            f"<div class=wx-what><b>{esc(now['short'])}</b>"
-            f"<span>{esc(w['label'])} &middot; {esc(now['name'].lower())}"
-            f"{' &middot; wind ' + esc(now['wind']) if now['wind'] else ''}</span>{rain}</div>"
-            f"</div><div class=wx-strip>{later}</div></div>")
-
-
-# Feed boilerplate that carries no information: HN summaries are the word
-# "Comments", Reddit appends a submission footer to everything.
 BLURB_JUNK = re.compile(r"submitted by\s*/u/\S+(\s+to\s+\S+)?|\[link\]|\[comments\]", re.I)
 
 
@@ -804,61 +784,6 @@ def blurb(text, title="", limit=160):
     return s[:limit].rsplit(" ", 1)[0] + "\u2026"
 
 
-def horoscope_block(h, esc):
-    """Under the quote, quieter than the quote. It is not news and should not look like it."""
-    if not h:
-        return ""
-    label = f"{h.get('glyph', '')} {esc(h.get('sign', ''))}".strip()
-    return (f"<p class=horoscope><span class=hsign>{label}</span> {esc(h.get('text', ''))}</p>")
-
-
-def extras_block(extras, esc, expanded=False):
-    """Feeds NotebookLM never reads, grouped by source. Links to skim, not summarised."""
-    if not extras:
-        return ""
-    by_feed = {}
-    for x in extras:
-        by_feed.setdefault(x.get("feed", "Other"), []).append(x)
-    out = []
-    for feed, group in by_feed.items():
-        rows = []
-        for x in group:
-            href = safe_link(x.get("link", ""))
-            name = esc(x.get("title", ""))
-            about = esc(x.get("about", ""))
-            rows.append(f"<li>" + (f"<a href='{esc(href)}' target=_blank "
-                                   f"rel='noopener noreferrer'>{name}</a>" if href else name)
-                        + (f"<span class=tmeta>{about}</span>" if about else "")
-                        + "</li>")
-        out.append(f"<details class=torrents{' open' if expanded else ''}>"
-                   f"<summary>{len(group)} from {esc(feed)}</summary>"
-                   f"<ul class=tlist>{''.join(rows)}</ul></details>")
-    return (f"<div class=extras><h3>Not in the summary</h3>{''.join(out)}</div>")
-
-
-def torrents_block(picks, esc, expanded=False):
-    """New listings only. Open on the newest episode; folded away on older ones,
-    where a list of what was new four days ago is just noise.
-    Deliberately absent from the digest — the hosts never see this.
-    """
-    if not picks:
-        return ""
-    base = (CFG.get("torrents") or {}).get("link_base", "").rstrip("/")
-    rows = []
-    for t in picks:
-        href = safe_link(base + t.get("path", "")) if base else ""
-        name = esc(t["title"])
-        label = f"<a href='{esc(href)}' target=_blank rel='noopener noreferrer'>" \
-            f"{name}</a>" if href else name
-        meta = " &middot; ".join(x for x in (esc(t["age"]) if t["age"] else "",
-                                             f"{t['seeders']} seeders" if t["seeders"] else "") if x)
-        rows.append(f"<li>{label}<span class=tmeta>{meta}</span></li>")
-    plural = "" if len(picks) == 1 else "s"
-    return (f"<details class=torrents{' open' if expanded else ''}>"
-            f"<summary>{len(picks)} new pick{plural}</summary>"
-            f"<ul class=tlist>{''.join(rows)}</ul></details>")
-
-
 def match_source(text, sources):
     """The article a show-note most likely came from, or None.
 
@@ -898,125 +823,12 @@ def note_links(notes, sources):
     return pairs, matched
 
 
-def write_index(eps):
-    """The briefing page. No assets, no external requests, nothing to install."""
-    esc = html.escape
-    cards = []
-    for n, e in enumerate(eps):
-        pairs, matched = note_links(e["notes"], e["sources"])
-        if pairs and e is eps[0]:
-            # Notes are NotebookLM's prose; if its phrasing drifts away from
-            # headlines this quietly falls to zero and the icons just stop.
-            log.info("note sources: %d/%d notes linked", matched, len(pairs))
-            if not matched:
-                log.warning("no note matched any source — has the note style changed?")
-        rows = []
-        for note, src in pairs:
-            link = ""
-            if src and safe_link(src.get("link", "")):
-                tip = esc(f"{src.get('feed', 'Source')} — {src.get('title', '')}")
-                link = (f"<a class=src-link href='{esc(safe_link(src['link']))}' "
-                        f"target=_blank rel='noopener noreferrer' "
-                        f"title=\"{tip}\" aria-label=\"{tip}\">&#8599;</a>")
-            rows.append(f"<li>{esc(note)}{link}</li>")
-        points = "".join(rows)
-        cards.append(
-            f"<article id='{esc(e['file'].stem)}'>"
-            f"<h2>{esc(e['title'])}</h2>"
-            f"<p class=meta>{e['local']:%A, %B} {e['local'].day}</p>"
-            + torrents_block(e.get("torrents"), esc, expanded=(n == 0))
-            + weather_block(e.get("weather"), esc)
-            + (f"<p class=quote>{esc(e['quote'])}</p>" if e.get("quote") else "")
-            + horoscope_block(e.get("horoscope"), esc)
-            + (f"<ul>{points}</ul>" if points else "")
-            + extras_block(e.get("extras"), esc, expanded=(n == 0))
-            + "</article>")
-    (OUT / "index.html").write_text(f"""<!doctype html>
-<html lang=en><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>{esc(CFG['feed']['title'])}</title>
-<style>
-:root {{ color-scheme: light dark; --bg:#fbfaf8; --fg:#1c1b19; --dim:#6b6862;
-        --card:#fff; --line:#e6e2db; --accent:#8a5a2b; }}
-@media (prefers-color-scheme: dark) {{
-  :root {{ --bg:#161513; --fg:#eceae6; --dim:#9a958c; --card:#1f1e1b;
-           --line:#302e2a; --accent:#d9a45b; }} }}
-* {{ box-sizing:border-box; }}
-body {{ margin:0 auto; padding:2.5rem 1.25rem 4rem; max-width:44rem; background:var(--bg);
-       color:var(--fg); font:16px/1.6 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; }}
-header {{ border-bottom:1px solid var(--line); padding-bottom:1.25rem; margin-bottom:2rem; }}
-h1 {{ font-size:1.6rem; margin:0 0 .35rem; letter-spacing:-.01em; }}
-header p {{ margin:0; color:var(--dim); font-size:.9rem; }}
-a {{ color:var(--accent); }}
-article {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-          padding:1.25rem 1.35rem; margin-bottom:1.1rem; scroll-margin-top:1rem; }}
-article:target {{ border-color:var(--accent); }}
-h2 {{ font-size:1.08rem; margin:0 0 .3rem; letter-spacing:-.01em; }}
-.meta {{ margin:0 0 .9rem; color:var(--dim); font-size:.82rem; }}
-.src-link {{ font-size:.72em; text-decoration:none; color:var(--dim);
-            padding-left:.4em; vertical-align:super; }}
-.src-link:hover, .src-link:focus-visible {{ color:var(--accent); }}
-.horoscope {{ margin:.7rem 0 0; font-style:italic; font-size:.88rem;
-              line-height:1.5; color:var(--dim); }}
-.hsign {{ font-style:normal; font-weight:600; color:var(--accent); padding-right:.3em; }}
-.quote {{ margin:1.1rem 0 0; padding:.15rem 0 .15rem 1rem;
-         border-left:3px solid var(--accent); font-style:italic; color:var(--fg);
-         font-size:.95rem; line-height:1.5; }}
-.extras {{ margin:1.2rem 0 0; }}
-.extras h3 {{ margin:0 0 .5rem; font-size:.72rem; letter-spacing:.09em;
-             text-transform:uppercase; color:var(--dim); font-weight:600; }}
-.extras .torrents {{ margin:.5rem 0 0; }}
-.torrents {{ margin:1rem 0 0; border:1px solid var(--line); border-radius:8px;
-            padding:.75rem .9rem; }}
-.torrents summary {{ cursor:pointer; font-size:.72rem; letter-spacing:.09em;
-                    text-transform:uppercase; color:var(--dim); font-weight:600; }}
-.torrents summary:focus-visible {{ outline:2px solid var(--accent); outline-offset:3px; }}
-.torrents[open] summary {{ margin-bottom:.6rem; }}
-.tlist {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.4rem; }}
-.tlist li {{ display:flex; flex-direction:column; gap:.1rem; font-size:.86rem;
-            word-break:break-word; }}
-.tmeta {{ font-size:.72rem; color:var(--dim); }}
-.wx {{ margin:1rem 0 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
-.wx-now {{ display:flex; align-items:center; gap:1rem; padding:.9rem 1.1rem; }}
-.wx-temp {{ font-size:2.1rem; font-weight:600; line-height:1; letter-spacing:-.02em; }}
-.wx-temp sup {{ font-size:.9rem; font-weight:500; top:-.7em; }}
-.wx-what {{ display:flex; flex-direction:column; gap:.15rem; }}
-.wx-what b {{ font-size:1rem; }}
-.wx-what span {{ font-size:.8rem; color:var(--dim); }}
-.pop {{ font-size:.75rem; color:var(--accent); }}
-.wx-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(90px,1fr));
-            border-top:1px solid var(--line); }}
-.wx-next {{ padding:.6rem .8rem; display:flex; flex-direction:column; gap:.1rem;
-           border-right:1px solid var(--line); }}
-.wx-next:last-child {{ border-right:0; }}
-.wx-next b {{ font-size:.76rem; }}
-.wx-next span {{ font-size:.72rem; color:var(--dim); }}
-.wx-next em {{ font-size:.78rem; font-style:normal; color:var(--fg); }}
-ul {{ margin:1rem 0 0; padding-left:1.15rem; }}
-li {{ margin:.3rem 0; }}
+def email_html(ep):
+    """The briefing email, rendered from the episode read back off disk.
 
-summary:hover {{ color:var(--fg); }}
-details h3 {{ font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
-             color:var(--dim); margin:1rem 0 .4rem; font-weight:600; }}
-.also {{ color:var(--dim); font-size:.8rem; }}
-</style>
-<header>
-<h1>{esc(CFG['feed']['title'])}</h1>
-<p>{len(eps)} briefing{'s' if len(eps) != 1 else ''}, newest first.</p>
-</header>
-{''.join(cards) or '<p>No episodes yet.</p>'}
-</html>
-""")
-    log.info("index: %d episodes", len(eps))
-
-
-def email_html(ep, link):
-    """HTML email, rendered from the same episode dict the page uses.
-
-    One shape, read from the sidecars, feeding both surfaces — so a section cannot
-    reach one and miss the other. Inline styles and tables only: mail clients ignore
-    stylesheets and several strip <style> outright, and no images, so nothing is
-    blocked or tracked.
+    Inline styles and tables only: mail clients ignore stylesheets and several strip
+    <style> outright. No images, so nothing is blocked or tracked, and no links back
+    to a server — the email is the whole product.
     """
     title, points = ep["title"], ep.get("notes") or ""
     weather, picks = ep.get("weather"), ep.get("torrents") or []
@@ -1052,9 +864,25 @@ def email_html(ep, link):
               f'cellpadding="0" cellspacing="0" style="border-top:1px solid {line}">'
               f'<tr>{nxt}</tr></table></td></tr></table>')
 
-    bullets = "".join(
-        f'<li style="margin:0 0 9px;line-height:1.55">{esc(re.sub(r"^-\s*", "", ln))}</li>'
-        for ln in points.splitlines() if ln.strip())
+    # The arrow the page used to carry: NotebookLM reports no provenance, so the
+    # article is inferred from shared distinctive words and omitted when unsure.
+    pairs, matched = note_links(points, ep.get("sources") or [])
+    rows = []
+    for note, src in pairs:
+        arrow = ""
+        if src and safe_link(src.get("link", "")):
+            tip = esc(f"{src.get('feed', 'Source')} — {src.get('title', '')}")
+            arrow = (f'<a href="{esc(safe_link(src["link"]))}" title="{tip}" '
+                     f'style="color:{dim};text-decoration:none;font-size:.8em;'
+                     f'padding-left:4px">&#8599;</a>')
+        rows.append(f'<li style="margin:0 0 9px;line-height:1.55">{esc(note)}{arrow}</li>')
+    bullets = "".join(rows)
+    if pairs:
+        # Notes are NotebookLM's prose; if its phrasing drifts away from headlines
+        # this quietly falls to zero and the arrows just stop appearing.
+        log.info("note sources: %d/%d notes linked", matched, len(pairs))
+        if not matched and ep.get("sources"):
+            log.warning("no note matched any source — has the note style changed?")
 
     tor = ""
     if picks:
@@ -1144,15 +972,11 @@ def email_html(ep, link):
             f'{horo_html}'
             f'<ul style="margin:0;padding-left:19px;font-size:15px;color:{ink}">{bullets}</ul>'
             f'{extra_html}'
-            f'<div style="padding-top:24px">'
-            f'<a href="{esc(link)}" style="background:{accent};color:#fff;text-decoration:none;'
-            f'font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;'
-            f'display:inline-block">Open the briefing page</a></div>'
             f'</td></tr></table></td></tr></table></body></html>')
 
 
-def email_plain(ep, link):
-    """Plain-text twin of email_html, from the same episode dict and in the same order."""
+def email_plain(ep):
+    """Plain-text twin of email_html, from the same episode and in the same order."""
     wx = weather_summary(ep.get("weather"))
     h = ep.get("horoscope")
     return (torrents_mail(ep.get("torrents") or []).lstrip("\n")
@@ -1161,7 +985,7 @@ def email_plain(ep, link):
             + (f"\n\n{h['sign']}: {h['text']}" if h else "")
             + f"\n\n{ep.get('notes') or ''}"
             + extras_mail(ep.get("extras") or [])
-            + f"\n\nFull briefing: {link}")
+            )
 
 
 def check_rendered(html_body, plain_body, weather, picks, extras, quote, horoscope):
@@ -1247,7 +1071,7 @@ def banner():
     log.info("config %s: %d feeds, max_per_feed=%s, window=%sh, ledger=%sd, bullets=%s, "
              "keep=%s", CFG_PATH, len(CFG["feeds"]), CFG["max_per_feed"],
              CFG.get("max_age_hours", 48), CFG.get("ledger_days", 7), CFG.get("bullets", 12),
-             CFG["feed"]["keep_episodes"])
+             CFG.get("keep_episodes", 14))
     # Degraded modes are silent by design elsewhere; say them out loud here.
     log.info("full_text=%s | smtp=%s | healthcheck=%s | syslog=%s",
              f"on (trafilatura {trafilatura.__version__})" if trafilatura else "OFF (trafilatura missing)",
@@ -1300,11 +1124,6 @@ def extras_mail(extras):
     return "\n".join(out)
 
 
-def episode_link(stamp):
-    """The listening page, anchored at this episode — not a 60MB download link."""
-    return f"{CFG['feed']['base_url'].rstrip('/')}/#{stamp}"
-
-
 def ping_healthcheck(ok):
     """Dead-man's switch (e.g. healthchecks.io): the monitor alerts when pings stop."""
     url = os.environ.get("HEALTHCHECK_URL")
@@ -1332,9 +1151,8 @@ def main():
           links that appear solely in the email.
       4.  NotebookLM builds the episode, then writes the notes, the title and the
           quote. It is the slow step and the only one that can take ten minutes.
-      5.  Sidecars are written, then read straight back with episodes(). The email
-          and the page both render from that one episode, so a section cannot
-          reach one surface and miss the other.
+      5.  Sidecars are written, then read straight back with episodes() and the
+          email is rendered from that, so what is sent matches what was archived.
       6.  Only a finished episode is committed to the ledger, so a failed run
           does not burn stories it never covered.
 
@@ -1409,16 +1227,14 @@ def main():
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()
-        # Everything below renders from what was just written to disk, so the email
-        # and the page cannot disagree, and a sidecar that failed to write is missing
-        # from both rather than from one.
+        # The email renders from what was just written to disk rather than from the
+        # variables above, so a sidecar that failed to write shows up as a missing
+        # section here instead of silently differing from the archive.
         eps = episodes()
-        write_index(eps)
         today = next((e for e in eps if e["stem"] == stamp), None)
         if today is None:
             raise RuntimeError(f"{stamp} is missing from the briefing list")
-        link = episode_link(stamp)
-        html_body, plain_body = email_html(today, link), email_plain(today, link)
+        html_body, plain_body = email_html(today), email_plain(today)
         check_rendered(html_body, plain_body, weather, fresh_picks, extra_rows, quote,
                        horoscope)
         send_mail(today["title"], plain_body, html_body)

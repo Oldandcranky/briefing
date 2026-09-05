@@ -39,9 +39,8 @@ jobs:
             briefing:ci python -c "
           import trafilatura, briefing as b
           assert b.CFG['feeds'], 'no feeds configured'
-          assert b.CFG['feed']['base_url'], 'feed.base_url missing'
-          assert b.CFG['email']['to'], 'email.to missing'
-          assert b.CFG['feed']['keep_episodes'] > 0, 'keep_episodes must be positive'
+                    assert b.CFG['email']['to'], 'email.to missing'
+          assert int(b.CFG.get('keep_episodes', 14)) > 0, 'keep_episodes must be positive'
           assert int(b.CFG.get('bullets', 12)) > 0, 'bullets must be positive'
           print('ok:', len(b.CFG['feeds']), 'feeds,',
                 b.CFG.get('bullets', 12), 'bullets,',
