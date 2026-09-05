@@ -84,15 +84,15 @@ if [ -n "${CONFIG_FILE:-}" ] && [ -f "$CONFIG_FILE" ]; then
     "$DOCKER" run --rm -e BRIEFING_OUT=/tmp/out -e BRIEFING_CONFIG=/tmp/config.yaml \
         -v "$CONFIG_FILE:/tmp/config.yaml:ro" "$CAND" python -c "
 import briefing as b
-assert isinstance(b.CFG['audio']['prompts'], list), 'audio.prompts must be a list'
 assert b.CFG['feeds'], 'no feeds configured'
 assert b.CFG['feed']['base_url'], 'feed.base_url missing'
 assert b.CFG['feed']['keep_episodes'] > 0, 'keep_episodes must be positive'
 assert b.CFG['email']['to'], 'email.to missing'
-print('%d feeds, %d prompts, %s/%s, %d bullets, %sh window, %sd ledger' % (
-    len(b.CFG['feeds']), len(b.CFG['audio']['prompts']),
-    b.CFG['audio']['format'], b.CFG['audio']['length'], b.CFG.get('bullets', 12),
-    b.CFG.get('max_age_hours', 48), b.CFG.get('ledger_days', 7)))
+assert int(b.CFG.get('bullets', 12)) > 0, 'bullets must be positive'
+print('%d feeds, %d bullets, %sh window, %sd ledger, keep %d' % (
+    len(b.CFG['feeds']), b.CFG.get('bullets', 12),
+    b.CFG.get('max_age_hours', 48), b.CFG.get('ledger_days', 7),
+    b.CFG['feed']['keep_episodes']))
 " 2>/dev/null | sed 's/^/        /'
     ok "$CONFIG_FILE still satisfies the new code"
 else
