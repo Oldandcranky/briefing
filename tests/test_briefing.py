@@ -38,10 +38,6 @@ full_text:
   count: 4
   max_chars: 4000
   workers: 2
-audio:
-  prompts: ["Two hosts, brisk news briefing."]
-  format: brief
-  length: short
 keep_episodes: 3
 email:
   to: a@example.com
@@ -52,6 +48,10 @@ email:
 os.environ.update(BRIEFING_OUT=str(OUT), BRIEFING_CONFIG=str(CFG))
 sys.path.insert(0, str(ROOT))
 import briefing as b  # noqa: E402
+
+# Sections below stub b.run freely; keep the real one to restore when a test
+# needs to exercise run() itself rather than one of its callers.
+REAL_RUN = b.run
 
 def mk_ep(title="T", notes="- A note.", weather=None, torrents=None, quote="",
           extras=None, horoscope=None):
@@ -149,9 +149,9 @@ check("bold stripped from prose", "**" not in b.unmark(REAL) and "Twitter tradem
 check("italics stripped too", "*the*" not in b.unmark(REAL) and " the platform" in b.unmark(REAL))
 check("citations stripped by the same pass", "[1]" not in b.unmark(REAL))
 check("unmark is safe on empty input", b.unmark("") == "" and b.unmark(None) == "")
-b.run = lambda *a: json.dumps({"answer": REAL})
+b.run = lambda *a, **k: json.dumps({"answer": REAL})
 check("the quote comes out clean", "**" not in b.episode_quote("nb"), b.episode_quote("nb"))
-b.run = lambda *a: json.dumps({"answer": "**Nvidia** buys *Hugging Face* [2]"})
+b.run = lambda *a, **k: json.dumps({"answer": "**Nvidia** buys *Hugging Face* [2]"})
 check("the title comes out clean",
       b.episode_title("nb", "2026-08-26", "- x") == "Aug 26 '26 · Nvidia buys Hugging Face",
       b.episode_title("nb", "2026-08-26", "- x"))
@@ -414,24 +414,31 @@ check("missing heading is not an error", b.parse_picks(FIXTURE, "No Such Table")
 check("a login page parses to nothing",
       b.parse_picks("<html><body>Please log in</body></html>", "Staff Picks") == [])
 
+# These stamps have to stay on the correct side of the 30-day window, so derive them
+# from today instead of hardcoding. A fixed date quietly drifts to the wrong side of
+# the window it was chosen for: "2026-08-28" was inside it when written and three of
+# the checks below started failing 33 days later, blaming the code rather than the clock.
+SEEN_RECENTLY = datetime.now().strftime("%Y-%m-%d")
+LONG_EXPIRED = "2020-01-01"
+
 tled = OUT / "torrents-seen.jsonl"
 tled.unlink(missing_ok=True)
 check("everything is new the first time", len(b.unseen_torrents(picks, tled, 30)) == 15)
-b.remember_torrents(picks, tled, "2026-08-28", 30)
+b.remember_torrents(picks, tled, SEEN_RECENTLY, 30)
 check("nothing is new the second time", b.unseen_torrents(picks, tled, 30) == [])
 extra = picks + [{"id": "999999", "path": "/t/999999", "title": "Brand New Release-TEAM",
                   "age": "5 minutes ago", "seeders": 3, "leechers": 1}]
 fresh = b.unseen_torrents(extra, tled, 30)
 check("only the genuinely new one surfaces",
       len(fresh) == 1 and fresh[0]["id"] == "999999", [f["id"] for f in fresh])
-tled.write_text('{"date": "2026-08-28", "id": "' + picks[0]["id"] + '"}\nGARBAGE\n')
+tled.write_text('{"date": "%s", "id": "%s"}\nGARBAGE\n' % (SEEN_RECENTLY, picks[0]["id"]))
 check("a corrupt line doesn't reset the history",
       len(b.unseen_torrents(picks, tled, 30)) == 14, f"{len(b.unseen_torrents(picks, tled, 30))}")
-old = "\n".join('{"date": "2020-01-01", "id": "%s"}' % p["id"] for p in picks)
+old = "\n".join('{"date": "%s", "id": "%s"}' % (LONG_EXPIRED, p["id"]) for p in picks)
 tled.write_text(old + "\n")
 check("history outside the window is ignored", len(b.unseen_torrents(picks, tled, 30)) == 15)
-b.remember_torrents(picks, tled, "2026-08-28", 30)
-check("history is pruned when rewritten", "2020-01-01" not in tled.read_text())
+b.remember_torrents(picks, tled, SEEN_RECENTLY, 30)
+check("history is pruned when rewritten", LONG_EXPIRED not in tled.read_text())
 
 b.CFG["torrents"] = {"url": "", "cookie_env": "TEST_COOKIE"}
 check("no url configured means no fetch", b.fetch_torrents() == [])
@@ -487,9 +494,9 @@ check("build_digest takes no torrents argument",
 
 # Article bodies are only worth fetching for stories the hosts will read. Fetching
 # before the split spent the budget on email-only links and left the digest as a
-# list of one-line blurbs, which is what padded the audio.
+# list of one-line blurbs, which is what padded the write-up.
 _main_src = __import__("inspect").getsource(b.main)
-check("full text is fetched after the audio split",
+check("full text is fetched after the digest split",
       _main_src.index("spoken = [") < _main_src.index("add_full_text("))
 check("full text targets the spoken stories only", "add_full_text(spoken)" in _main_src)
 
@@ -550,16 +557,16 @@ check("plain text is still built alongside html",
 b.CFG.pop("torrents"); b.CFG.pop("weather")
 
 section("quote of the day")
-b.run = lambda *a: json.dumps({"answer": "Everything is a subscription now [1, 2]."})
+b.run = lambda *a, **k: json.dumps({"answer": "Everything is a subscription now [1, 2]."})
 q = b.episode_quote("nb")
 check("quote returned and citations stripped", q == "Everything is a subscription now.", q)
-b.run = lambda *a: json.dumps({"answer": '"Quoted and starred*"'})
+b.run = lambda *a, **k: json.dumps({"answer": '"Quoted and starred*"'})
 check("wrapping quotes and stars trimmed", "\"" not in b.episode_quote("nb"), b.episode_quote("nb"))
-b.run = lambda *a: json.dumps({"answer": "x" * 400})
+b.run = lambda *a, **k: json.dumps({"answer": "x" * 400})
 check("an over-long ramble is dropped", b.episode_quote("nb") == "")
-b.run = lambda *a: json.dumps({"answer": ""})
+b.run = lambda *a, **k: json.dumps({"answer": ""})
 check("an empty answer is dropped", b.episode_quote("nb") == "")
-def _qboom(*a): raise RuntimeError("ask failed")
+def _qboom(*a, **k): raise RuntimeError("ask failed")
 b.run = _qboom
 check("a failed ask costs the quote, not the run", b.episode_quote("nb") == "")
 check("the prompt steers away from the grim stories",
@@ -581,7 +588,7 @@ b.CFG.pop("weather")
 
 check("prune sweeps the quote sidecar", ".quote" in __import__("inspect").getsource(b.prune))
 
-section("feeds kept out of the audio")
+section("feeds kept out of the digest")
 EX = [{"title": "owner/repo-one", "feed": "GitHub Trending", "link": "https://gh.example/1"},
       {"title": "owner/repo-two", "feed": "GitHub Trending", "link": "javascript:alert(1)"}]
 esc2 = __import__("html").escape
@@ -805,11 +812,11 @@ check("stale digest skipped",
 check("missing digest safe", b.rotate_digest(digest, prev) is None)
 
 section("episode title")
-b.run = lambda *a: json.dumps({"answer": "Fed cuts rates, Taiwan braces for typhoon [1-3]"})
+b.run = lambda *a, **k: json.dumps({"answer": "Fed cuts rates, Taiwan braces for typhoon [1-3]"})
 check("uses the ask, citations stripped",
       b.episode_title("nb", "2026-08-26", "- x") ==
       "Aug 26 '26 · Fed cuts rates, Taiwan braces for typhoon")
-def boom(*a):
+def boom(*a, **k):
     raise RuntimeError("ask failed")
 b.run = boom
 check("falls back to the first bullet whole",
@@ -823,7 +830,7 @@ check("short date reads as month, day, short year", b.short_date("2026-09-05") =
 check("no leading zero on the day", b.short_date("2026-01-01") == "Jan 1 '26")
 check("december is Dec", b.short_date("2026-12-25") == "Dec 25 '26")
 check("a stamp it cannot parse is passed through", b.short_date("not-a-date") == "not-a-date")
-b.run = lambda *a: json.dumps({"answer": "x" * 200})
+b.run = lambda *a, **k: json.dumps({"answer": "x" * 200})
 check("over-long title rejected",
       b.episode_title("nb", "2026-08-26", "- Short bullet") == "Aug 26 '26 · Short bullet")
 
@@ -941,11 +948,11 @@ real_send = b.send_mail
 b.send_mail = lambda subject, body: sent.update(subject=subject, body=body)
 b.log.info("MARKER-a-distinctive-log-line")
 try:
-    raise RuntimeError("audio generation exploded")
+    raise RuntimeError("write-up generation exploded")
 except RuntimeError as ex:
     b.send_mail(f"Briefing 2026-08-26 FAILED",
                 f"{type(ex).__name__}: {ex}\n\nLast lines:\n\n{b.log_tail()}")
-check("failure email names the error", "RuntimeError: audio generation exploded" in sent["body"])
+check("failure email names the error", "RuntimeError: write-up generation exploded" in sent["body"])
 check("failure email carries the log", "MARKER-a-distinctive-log-line" in sent["body"])
 check("failure email stays emailable", len(sent["body"]) < 20_000, f"{len(sent['body'])} bytes")
 b.send_mail = real_send
@@ -980,11 +987,11 @@ class Capture(_lg.Handler):
 cap = Capture(); b.log.addHandler(cap)
 
 cap.msgs.clear()
-b.run = lambda *a: json.dumps({"answer": ""})
+b.run = lambda *a, **k: json.dumps({"answer": ""})
 b.episode_quote("nb")
 check("an empty quote says why", any("empty answer" in m for _, m in cap.msgs), cap.msgs)
 cap.msgs.clear()
-b.run = lambda *a: json.dumps({"answer": "x" * 400})
+b.run = lambda *a, **k: json.dumps({"answer": "x" * 400})
 b.episode_quote("nb")
 check("an over-long quote says why", any("too long" in m for _, m in cap.msgs), cap.msgs)
 
@@ -1057,6 +1064,134 @@ b.prune()
 check("oldest briefing dropped", not (OUT / "2026-08-23.txt").exists())
 check("newest kept with sidecars",
       (OUT / "2026-08-26.txt").exists() and (OUT / "2026-08-26.title").exists())
+
+
+# ------------------------------------------- transient NotebookLM failures
+section("retrying transient NotebookLM failures")
+
+# Verbatim from the run that died on 2026-09-30. Both digests had already uploaded;
+# a timed-out GET_NOTEBOOK during the follow-up sanity check ended the whole briefing.
+REAL_BLIP = """05:46:04 WARNING [notebooklm.middleware.tracing] [req=de7acd06] rpc failed: \
+RPC GET_NOTEBOOK (TransportServerError)
+05:46:04 WARNING [notebooklm._core] [req=de7acd06] RPC GET_NOTEBOOK retry timed out after 30.0s
+05:46:04 ERROR [notebooklm._rpc_executor] [req=de7acd06] RPC GET_NOTEBOOK failed after \
+30.123s:  (server-error retries exhausted)"""
+
+check("the real 2026-09-30 error reads as transient", bool(b.TRANSIENT.search(REAL_BLIP)))
+check("a 503 reads as transient", bool(b.TRANSIENT.search("upstream returned 503")))
+check("an expired session does not",
+      not b.TRANSIENT.search("not logged in: run notebooklm login"))
+check("a bad notebook id does not",
+      not b.TRANSIENT.search("Notebook not found: b1714115-9d9e"))
+
+
+class FakeProc:
+    def __init__(self, code, out="", err=""):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
+def cli_script(*results):
+    """Hand run() a scripted sequence of CLI outcomes; the last one repeats."""
+    calls = []
+
+    def fake(argv, **kw):
+        calls.append(argv)
+        return results[min(len(calls) - 1, len(results) - 1)]
+    return fake, calls
+
+
+b.run = REAL_RUN               # earlier sections left a stub in place
+real_sp_run = b.subprocess.run
+# backoff=0 everywhere below, so the retry path is exercised without the suite waiting.
+
+fake, calls = cli_script(FakeProc(1, err=REAL_BLIP), FakeProc(0, out='{"sources": [1]}'))
+b.subprocess.run = fake
+check("a transient failure is retried, and the second attempt is used",
+      json.loads(b.run("metadata", retries=2, backoff=0))["sources"] == [1]
+      and len(calls) == 2, f"{len(calls)} calls")
+
+fake, calls = cli_script(FakeProc(1, err="Notebook not found"))
+b.subprocess.run = fake
+try:
+    b.run("metadata", retries=5, backoff=0)
+    fast = False
+except RuntimeError:
+    fast = True
+check("a real fault fails fast instead of burning five retries",
+      fast and len(calls) == 1, f"{len(calls)} calls")
+
+fake, calls = cli_script(FakeProc(1, err=REAL_BLIP))
+b.subprocess.run = fake
+try:
+    b.run("metadata", retries=2, backoff=0)
+    gave_up = False
+except RuntimeError:
+    gave_up = True
+check("a persistent blip gives up after retries+1 attempts",
+      gave_up and len(calls) == 3, f"{len(calls)} calls")
+
+fake, calls = cli_script(FakeProc(1, err=REAL_BLIP))
+b.subprocess.run = fake
+try:
+    b.run("create", "briefing-x")
+except RuntimeError:
+    pass
+check("retries are off by default, so create is never repeated",
+      len(calls) == 1, f"{len(calls)} calls")
+b.subprocess.run = real_sp_run
+
+
+# --------------------------------- a flaky sanity check must not lose a run
+section("a flaky sanity check does not discard a good run")
+
+DIGEST = OUT / "wu-digest.md"
+DIGEST.write_text("# digest\n- Fed cuts rates.\n")
+
+
+def notebook_cli(metadata):
+    """A CLI where create, source add and ask all work; metadata behaves as told."""
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(a[0])
+        if a[0] == "create":
+            return json.dumps({"notebook": {"id": "nb1"}})
+        if a[0] == "metadata":
+            return metadata()
+        if a[0] == "ask":
+            return json.dumps({"answer": "- Fed cuts rates.\n- Typhoon nears Taiwan."})
+        return ""
+    return fake, calls
+
+
+def unreachable():
+    raise RuntimeError("notebooklm metadata --json exited 1: " + REAL_BLIP)
+
+
+fake, calls = notebook_cli(unreachable)
+b.run = fake
+points, title, quote = b.write_up(DIGEST, None, "2026-09-30")
+check("unreachable metadata no longer ends the run", "Fed cuts rates" in points)
+check("the write-up still gets a title", "Fed cuts rates" in title, title)
+check("the notebook is still deleted afterwards", "delete" in calls)
+
+fake, calls = notebook_cli(lambda: json.dumps({"sources": []}))
+b.run = fake
+try:
+    b.write_up(DIGEST, None, "2026-09-30")
+    caught = ""
+except RuntimeError as ex:
+    caught = str(ex)
+check("a notebook that truly reports no sources still fails",
+      "no sources" in caught, caught[:60])
+check("and that notebook is cleaned up too", "delete" in calls)
+
+fake, calls = notebook_cli(
+    lambda: json.dumps({"error": True, "code": "NETWORK_ERROR", "message": "timed out"}))
+b.run = fake
+points, _, _ = b.write_up(DIGEST, None, "2026-09-30")
+check("an error payload counts as unverified, not as zero sources",
+      "Fed cuts rates" in points)
 
 if LIVE:
     section("live feeds (network)")

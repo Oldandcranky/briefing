@@ -83,18 +83,40 @@ if os.environ.get("SYSLOG_HOST"):
     logging.getLogger().addHandler(_h)
 
 
-def run(*args):
-    """Run the notebooklm CLI, log its output, raise on failure."""
-    log.info("cli: %s", " ".join(args))
-    p = subprocess.run(["notebooklm", *args], capture_output=True, text=True)
-    if p.stdout.strip():
-        log.debug("cli stdout: %s", p.stdout.strip()[:2000])
-    if p.stderr.strip():
-        log.info("cli stderr: %s", p.stderr.strip()[:2000])
-    if p.returncode != 0:
-        raise RuntimeError(f"notebooklm {' '.join(args)} exited {p.returncode}: "
-                           f"{(p.stderr or p.stdout).strip()[:2000]}")
-    return p.stdout
+# NotebookLM's backend fails transiently often enough to matter. The CLI already
+# retries an RPC for 30s on its own and then exits 1, which to us is indistinguishable
+# from a real fault — so match the shape of a blip and give it another go.
+TRANSIENT = re.compile(
+    r"NETWORK_ERROR|TransportServerError|server-error|retries exhausted"
+    r"|timed out|timeout|deadline exceeded|unavailable|internal error"
+    r"|\b(?:429|500|502|503|504)\b", re.I)
+
+
+def run(*args, retries=0, backoff=4):
+    """Run the notebooklm CLI, log its output, raise on failure.
+
+    `retries` is opt-in per call site rather than blanket, because these calls are not
+    all safe to repeat: a second `create` would leave an orphan notebook behind, and a
+    second `source add` would upload the digest twice and skew the write-up. Reads and
+    deletes are safe, so those are the ones that ask for it.
+    """
+    for attempt in range(retries + 1):
+        log.info("cli: %s%s", " ".join(args),
+                 f" (attempt {attempt + 1}/{retries + 1})" if attempt else "")
+        p = subprocess.run(["notebooklm", *args], capture_output=True, text=True)
+        if p.stdout.strip():
+            log.debug("cli stdout: %s", p.stdout.strip()[:2000])
+        if p.stderr.strip():
+            log.info("cli stderr: %s", p.stderr.strip()[:2000])
+        if p.returncode == 0:
+            return p.stdout
+        err = (p.stderr or p.stdout).strip()
+        if attempt == retries or not TRANSIENT.search(err):
+            raise RuntimeError(f"notebooklm {' '.join(args)} exited {p.returncode}: "
+                               f"{err[:2000]}")
+        wait = backoff * 2 ** attempt
+        log.warning("cli: %s failed transiently, retrying in %ds", args[0], wait)
+        time.sleep(wait)
 
 
 def jparse(out):
@@ -606,9 +628,9 @@ def episode_title(nb, stamp, points):
     """Headline for the episode; falls back to the first bullet, then to the bare date."""
     title = ""
     try:
-        answer = jparse(run("ask", "A title for this episode: at most eight words, naming "
+        answer = jparse(run("ask", "A title for this briefing: at most eight words, naming "
                             "the biggest stories. No quotes, no preamble.",
-                            "-n", nb, "--json")).get("answer", "")
+                            "-n", nb, "--json", retries=2)).get("answer", "")
         title = unmark(next((ln.strip(" \"'*.#") for ln in answer.splitlines() if ln.strip()), ""))
         title = title.strip(" \"'*.#")
     except Exception:
@@ -629,7 +651,7 @@ def episode_quote(nb):
         answer = jparse(run("ask", "One dry, witty line about today's lighter or more absurd "
                             "stories - at most 25 words. Nothing about death, disaster, "
                             "violence, crime or illness. No preamble, no quotation marks.",
-                            "-n", nb, "--json")).get("answer", "")
+                            "-n", nb, "--json", retries=2)).get("answer", "")
     except Exception:
         log.warning("quote ask failed", exc_info=True)
         return ""
@@ -658,15 +680,30 @@ def write_up(digest, prev, stamp):
         run("source", "add", str(digest), "-n", nb)
         if prev:
             run("source", "add", str(prev), "-n", nb)
-        if not jparse(run("metadata", "--json", "-n", nb)).get("sources"):
-            raise RuntimeError("source add reported success but notebook has no sources")
+        # Tell "the notebook reports zero sources" apart from "we could not ask".
+        # The first means the uploads silently failed and the write-up would be
+        # invented; the second is just Google's RPC layer being flaky. On 2026-09-30 a
+        # timed-out GET_NOTEBOOK ended a run whose two uploads had both already
+        # reported success, which is a lot of work to throw away over a sanity check.
+        try:
+            meta = jparse(run("metadata", "--json", "-n", nb, retries=2))
+        except (RuntimeError, ValueError):
+            log.warning("could not read notebook metadata; every source add reported "
+                        "success, so continuing unverified", exc_info=True)
+        else:
+            if meta.get("error"):
+                log.warning("notebook metadata returned an error payload (%s); "
+                            "continuing unverified",
+                            meta.get("code") or meta.get("message"))
+            elif not meta.get("sources"):
+                raise RuntimeError("source add reported success but notebook has no sources")
 
         t0 = datetime.now()
         ask = (f"{CFG.get('bullets', 12)} bullet points, one line each, covering the most "
                "important stories. No preamble.")
         if prev:
             ask += DELTA_NOTE
-        points = clean(jparse(run("ask", ask, "-n", nb, "--json")).get("answer", ""))
+        points = clean(jparse(run("ask", ask, "-n", nb, "--json", retries=2)).get("answer", ""))
         if not points:
             raise RuntimeError("NotebookLM returned no usable bullet points")
         log.info("write-up: %d bullets in %ds", len(points.splitlines()),
@@ -674,7 +711,7 @@ def write_up(digest, prev, stamp):
         return points, episode_title(nb, stamp, points), episode_quote(nb)
     finally:
         try:
-            run("delete", "-n", nb, "--yes")
+            run("delete", "-n", nb, "--yes", retries=1)
         except Exception:
             log.exception("cleanup failed, notebook %s left behind", nb)
 
@@ -687,7 +724,7 @@ def prune():
     days = sorted((f for f in OUT.glob("*.txt") if STAMP.match(f.stem)), reverse=True)
     for f in days[CFG.get("keep_episodes", 14):]:
         for ext in (".title", ".sources", ".weather", ".torrents", ".quote", ".extras",
-                    ".horoscope", ".m4a"):
+                    ".horoscope"):
             f.with_suffix(ext).unlink(missing_ok=True)
         f.unlink()
         log.info("pruned %s", f.stem)

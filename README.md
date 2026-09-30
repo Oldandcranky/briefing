@@ -35,6 +35,16 @@ Each run:
    is weak. Nothing links back to a server: the email is the whole product.
    Or the error, if the run failed.
 
+NotebookLM's backend fails transiently more often than you would like — a timed-out
+`GET_NOTEBOOK` is Google's RPC layer having a moment, not a problem with the notebook.
+The CLI retries an RPC for 30s and then exits non-zero, which is indistinguishable
+from a real fault, so calls that are safe to repeat ask for a few more attempts with a
+widening backoff. `create` and `source add` deliberately do not: repeating them would
+orphan a notebook or upload the digest twice. The source check that follows the uploads
+distinguishes *the notebook reports no sources* — a real fault, since the write-up
+would then be invented — from *we could not reach it to ask*, which is logged and
+continued past. The latter once ended a run whose uploads had both already succeeded.
+
 An optional `torrents` section fetches a listing page behind a session cookie,
 shows only entries missing from `torrents-seen.jsonl`, and adds them to the
 email. It is deliberately kept out of the digest, so it never reaches NotebookLM
