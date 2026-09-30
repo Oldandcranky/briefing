@@ -666,6 +666,52 @@ def episode_quote(nb):
     return line
 
 
+def find_notebooks(title):
+    """Every notebook with this exact title, newest first. [] if we cannot tell."""
+    try:
+        nbs = jparse(run("list", "--json", retries=2)).get("notebooks", [])
+    except (RuntimeError, ValueError, KeyError):
+        log.warning("could not list notebooks to reconcile", exc_info=True)
+        return []
+    return sorted((n for n in nbs if n.get("title") == title),
+                  key=lambda n: n.get("created_at") or "", reverse=True)
+
+
+def create_notebook(stamp, retries=2, backoff=4):
+    """Create the run's notebook, reconciling an unconfirmed create rather than
+    repeating it blind.
+
+    This is the one call that cannot simply be retried. When CREATE_NOTEBOOK times out
+    the CLI reports UNCONFIRMED_WRITE — the notebook may or may not exist — and says
+    so explicitly: retrying blind is how one morning ends up with two notebooks and a
+    write-up assembled from half its sources. So on a transient failure, look for the
+    notebook by the title we asked for and adopt it if it turned up; only create again
+    when nothing did. On 2026-09-30 the write really had not landed, and the run died
+    for want of a second look.
+    """
+    title = f"briefing-{stamp}"
+    for attempt in range(retries + 1):
+        try:
+            return jparse(run("create", title, "--json"))["notebook"]["id"]
+        except (RuntimeError, ValueError, KeyError) as ex:
+            if not (TRANSIENT.search(str(ex)) or "UNCONFIRMED" in str(ex).upper()):
+                raise
+            found = find_notebooks(title)
+            if found:
+                if len(found) > 1:
+                    log.warning("%d notebooks named %s — using the newest; delete the "
+                                "others by hand", len(found), title)
+                log.warning("create was unconfirmed but %s exists; adopting it",
+                            found[0]["id"])
+                return found[0]["id"]
+            if attempt == retries:
+                raise
+            wait = backoff * 2 ** attempt
+            log.warning("create failed and no notebook appeared, so nothing was "
+                        "committed; retrying in %ds", wait)
+            time.sleep(wait)
+
+
 def write_up(digest, prev, stamp):
     """Ask NotebookLM to read the digest and write the briefing.
 
@@ -674,7 +720,7 @@ def write_up(digest, prev, stamp):
     one-line quote; the title and quote fall back gracefully, the notes do not,
     because without them there is no briefing.
     """
-    nb = jparse(run("create", f"briefing-{stamp}", "--json"))["notebook"]["id"]
+    nb = create_notebook(stamp)
     log.info("notebook %s", nb)
     try:
         run("source", "add", str(digest), "-n", nb)

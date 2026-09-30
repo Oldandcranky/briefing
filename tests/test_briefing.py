@@ -1193,6 +1193,87 @@ points, _, _ = b.write_up(DIGEST, None, "2026-09-30")
 check("an error payload counts as unverified, not as zero sources",
       "Fed cuts rates" in points)
 
+
+# ------------------------------- an unconfirmed create must not be repeated
+section("an unconfirmed create is reconciled, not repeated")
+
+# What the CLI hands back when CREATE_NOTEBOOK times out: the write may or may not
+# have landed, and it says so rather than guessing.
+UNCONFIRMED = ("notebooklm create briefing-2026-09-30 --json exited 1: rpc failed: "
+               "RPC CREATE_NOTEBOOK (TransportServerError) (server-error retries exhausted)")
+MADE = json.dumps({"notebook": {"id": "fresh"}})
+
+
+def create_cli(results, listing):
+    """A CLI whose `create` follows a script and whose `list` returns `listing`."""
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(a[0])
+        if a[0] == "create":
+            r = results[min(calls.count("create") - 1, len(results) - 1)]
+            if isinstance(r, Exception):
+                raise r
+            return r
+        if a[0] == "list":
+            return json.dumps({"notebooks": listing})
+        return ""
+    return fake, calls
+
+
+LANDED = [{"id": "landed", "title": "briefing-2026-09-30",
+           "created_at": "2026-09-30T10:45:25+00:00"}]
+
+fake, calls = create_cli([RuntimeError(UNCONFIRMED), MADE], [])
+b.run = fake
+check("with nothing to adopt, the create is safe to repeat",
+      b.create_notebook("2026-09-30", backoff=0) == "fresh"
+      and calls.count("create") == 2, calls)
+
+fake, calls = create_cli([RuntimeError(UNCONFIRMED), MADE], LANDED)
+b.run = fake
+check("a create that did land is adopted instead of repeated",
+      b.create_notebook("2026-09-30", backoff=0) == "landed"
+      and calls.count("create") == 1, calls)
+
+fake, calls = create_cli([RuntimeError(UNCONFIRMED), MADE], LANDED + [
+    {"id": "newer", "title": "briefing-2026-09-30",
+     "created_at": "2026-09-30T10:47:00+00:00"}])
+b.run = fake
+check("where duplicates already exist, the newest is adopted",
+      b.create_notebook("2026-09-30", backoff=0) == "newer")
+
+fake, calls = create_cli([RuntimeError(UNCONFIRMED), MADE], [
+    {"id": "nope", "title": "briefing-2026-09-29", "created_at": "2026-09-29T10:00:00+00:00"},
+    {"id": "nope2", "title": "Nursing Core Curriculum", "created_at": "2026-08-04T22:30:22+00:00"}])
+b.run = fake
+check("yesterday's notebook and unrelated ones are not adopted",
+      b.create_notebook("2026-09-30", backoff=0) == "fresh", calls)
+
+fake, calls = create_cli([RuntimeError("not logged in: run notebooklm login")], [])
+b.run = fake
+try:
+    b.create_notebook("2026-09-30", backoff=0)
+    refused = False
+except RuntimeError:
+    refused = True
+check("an expired session is neither reconciled nor retried",
+      refused and calls.count("create") == 1 and "list" not in calls, calls)
+
+fake, calls = create_cli([RuntimeError(UNCONFIRMED)], [])
+b.run = fake
+try:
+    b.create_notebook("2026-09-30", retries=2, backoff=0)
+    spun = False
+except RuntimeError:
+    spun = True
+check("a persistent outage gives up rather than spinning",
+      spun and calls.count("create") == 3, calls)
+
+b.run = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("list is down"))
+check("an unlistable account reconciles to nothing rather than crashing",
+      b.find_notebooks("briefing-2026-09-30") == [])
+
 if LIVE:
     section("live feeds (network)")
     b.feedparser.parse = REAL_PARSE
