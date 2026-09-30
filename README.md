@@ -31,8 +31,11 @@ Each run:
    picks, the forecast, the quote, the notes — with the plain-text version
    carried alongside it. Each note carries a small ↗ to the article it most
    likely came from; NotebookLM reports no provenance, so that link is inferred
-   from shared distinctive words and omitted rather than guessed when the match
-   is weak. Nothing links back to a server: the email is the whole product.
+   from words the note shares with the article's headline *and* its feed summary.
+   The summary matters: the notes are written from article bodies and paraphrase
+   freely, so a note may say "Supreme Court" where the headline said "SCOTUS". A
+   match needs three shared words, a fifth of the note's own vocabulary, and a
+   clear lead over the runner-up — no link beats a confidently wrong one. Nothing links back to a server: the email is the whole product.
    Or the error, if the run failed.
 
 NotebookLM's backend fails transiently more often than you would like — a timed-out

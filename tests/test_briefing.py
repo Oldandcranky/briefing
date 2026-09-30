@@ -1274,6 +1274,73 @@ b.run = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("list is down"))
 check("an unlistable account reconciles to nothing rather than crashing",
       b.find_notebooks("briefing-2026-09-30") == [])
 
+
+# ------------------------------------ the summary is part of the matching vocabulary
+section("matching notes against summaries, not just headlines")
+
+# Verbatim from 2026-09-30. NPR's Up First headline bundles two stories and abbreviates
+# the one this note is about; only the summary spells out "Supreme Court".
+UPFIRST = [
+    {"title": "U.S. forces exit Iraq amid Iran war. And, SCOTUS revives Trump deportation policy",
+     "feed": "NPR", "feeds": ["NPR"], "link": "https://npr.example/upfirst",
+     "summary": "The U.S. has withdrawn its final troops from Iraq, leaving its defense future "
+                "uncertain. And, the Supreme Court has sided for now with the Trump "
+                "administration on third-country deportations."},
+    {"title": "Trump ads paid for by US government allegedly violate anti-propaganda law",
+     "feed": "Ars Technica", "feeds": ["Ars Technica"], "link": "https://ars.example/ads",
+     "summary": "Adverts promoting the administration have drawn formal complaints."}]
+SCOTUS_NOTE = ("Supreme Court Immigration Ruling: The U.S. Supreme Court permitted the Trump "
+               "administration to temporarily resume third-country deportations.")
+
+check("a summary supplies the vocabulary the headline dropped",
+      (b.match_source(SCOTUS_NOTE, UPFIRST) or {}).get("link") == "https://npr.example/upfirst")
+bare = [{k: v for k, v in src.items() if k != "summary"} for src in UPFIRST]
+check("on headlines alone that same note is unmatchable",
+      b.match_source(SCOTUS_NOTE, bare) is None)
+check("one source can back two notes, since a newsletter bundles stories",
+      (b.match_source("U.S. Troop Withdrawal from Iraq: The U.S. has withdrawn its final "
+                      "troops from Iraq, leaving its defense future uncertain.", UPFIRST)
+       or {}).get("link") == "https://npr.example/upfirst")
+
+# The miss that taught the margin test: the best candidate was a different story.
+WRONGISH = [{"title": "Trump ads paid for by US government allegedly violate law",
+             "feed": "Ars Technica", "feeds": [], "link": "https://ars.example/ads",
+             "summary": "Adverts promoting the Trump administration have drawn complaints."}]
+check("a single weak candidate is refused rather than linked",
+      b.match_source(SCOTUS_NOTE, WRONGISH) is None)
+
+# Two outlets, one story, headlines different enough to survive dedup. A strong match
+# must still win, or the day's biggest stories would be the ones that lose their arrows.
+TWIN = [{"title": "Global chip demand surges as data centre building accelerates",
+         "feed": "Ars Technica", "feeds": [], "link": "https://ars.example/chips",
+         "summary": "Analysts say demand for chips is driven by data centre construction."},
+        {"title": "Data centre construction accelerates on record global chip demand",
+         "feed": "The Verge", "feeds": [], "link": "https://verge.example/dc",
+         "summary": "Builders report a surge in data centre projects across the world."}]
+check("a strong match still wins against a close rival",
+      b.match_source("Data centre chip demand: Global demand for chips accelerated as data "
+                     "centre construction surged worldwide.", TWIN) is not None)
+
+# The ratio is measured against the note, so a wordier article cannot move the gate.
+SHORT = [{"title": "AMD acquires World Labs AI startup", "feed": "The Verge", "feeds": [],
+          "link": "https://verge.example/amd"}]
+LONG = [dict(SHORT[0], summary="AMD has agreed to acquire the AI startup World Labs, " +
+             "in a deal that industry analysts describe at length. " * 6)]
+NOTE = ("AMD Acquisition of World Labs: AMD agreed to acquire AI startup World Labs to "
+        "strengthen its position against Nvidia.")
+check("padding an article's vocabulary does not lose a match it already had",
+      (b.match_source(NOTE, SHORT) is not None) and (b.match_source(NOTE, LONG) is not None))
+
+# The sidecar has to carry the summary, or none of the above reaches a real run.
+(OUT / "2026-08-26.sources").write_text(json.dumps(UPFIRST))
+ep = next(e for e in b.episodes() if e["stem"] == "2026-08-26")
+check("summaries survive the trip through the sidecar",
+      all("summary" in src for src in ep["sources"]))
+(OUT / "2026-08-26.txt").write_text("- " + SCOTUS_NOTE)
+sm = b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
+check("a summary-only match still renders its arrow",
+      'href="https://npr.example/upfirst"' in sm and "&#8599;" in sm)
+
 if LIVE:
     section("live feeds (network)")
     b.feedparser.parse = REAL_PARSE

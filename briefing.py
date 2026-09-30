@@ -871,23 +871,50 @@ def match_source(text, sources):
     """The article a show-note most likely came from, or None.
 
     NotebookLM writes the notes from the whole digest at once and reports no
-    provenance, so this infers it from shared distinctive words. Calibrated on a
-    real run where every correct pairing shared three or more and every wrong one
-    shared at most one: below that, no link beats a confidently wrong link.
+    provenance, so this infers it from shared distinctive words. Three tests, all
+    calibrated against labelled real runs:
+
+        shared >= 3             the note and the article agree on three distinctive words
+        shared / note >= 0.2    a fifth of what the note is about, not one stray name
+        beats runner-up by 2    a clear winner, not the least bad option — waived for a
+                                match sharing 5+ words, which stands on its own
+
+    The vocabulary comes from the headline *and* the feed summary, because the notes
+    are written from article bodies and paraphrase freely. On headlines alone, three
+    of eight notes went unlinked on 2026-09-30: one wrote "Supreme Court" where the
+    headline said "SCOTUS", and another described a case count where the headline
+    described travel disruption. The summary carries the words the headline drops.
+
+    The margin test is what the third of those misses taught. Its best candidate was
+    a different story entirely, sharing a single word — so a lower threshold would
+    have produced a confidently wrong link rather than no link, which is worse.
+
+    The ratio is measured against the note, not against whichever side is shorter.
+    min() let the threshold move when the article's vocabulary grew: adding summaries
+    took a correct FBI pairing from 0.38 to 0.29 while its shared count went *up*.
     """
     kb = keywords(text)
     if not kb:
         return None
-    best, best_shared, best_ratio = None, 0, 0.0
+    scored = []
     for src in sources:
-        ks = keywords(src.get("title", ""))
-        if not ks:
-            continue
-        shared = len(kb & ks)
-        ratio = shared / min(len(kb), len(ks))
-        if (shared, ratio) > (best_shared, best_ratio):
-            best, best_shared, best_ratio = src, shared, ratio
-    if best_shared >= 3 and best_ratio >= 0.3:
+        blob = src.get("title", "")
+        if src.get("summary"):
+            blob += " " + src["summary"][:400]
+        ks = keywords(blob)
+        if ks:
+            shared = len(kb & ks)
+            scored.append((shared, shared / len(ks), src))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: (-t[0], -t[1]))   # keys are numbers; never compares dicts
+    shared, _, best = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0
+    # The margin requirement is waived for a strong match. Two outlets covering one
+    # story with headlines different enough to survive dedup would otherwise tie each
+    # other out — and that happens most on the day's biggest stories, which are exactly
+    # the ones the notes get written about.
+    if shared >= 3 and shared / len(kb) >= 0.2 and (shared - runner_up >= 2 or shared >= 5):
         return best
     return None
 
@@ -1294,7 +1321,10 @@ def main():
         # Only spoken stories join the note-matching pool; a note can't have come
         # from a feed the hosts never read.
         (OUT / f"{stamp}.sources").write_text(json.dumps(
-            [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"]}
+            [{"title": i["title"], "feed": i["feed"], "feeds": i["feeds"], "link": i["link"],
+              # The notes paraphrase article bodies, so the headline alone is too thin a
+              # vocabulary to match them against. Same 400-char cap the digest uses.
+              "summary": (i.get("summary") or "")[:400]}
              for i in spoken]))
         # Build these once and use the same list everywhere. Writing enriched rows to
         # the sidecar while handing the raw items to the email is how the about lines
