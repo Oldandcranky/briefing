@@ -12,6 +12,7 @@ import os
 import random
 import re
 import smtplib
+import socket
 import subprocess
 import time
 import sys
@@ -100,10 +101,21 @@ def run(*args, retries=0, backoff=4):
     second `source add` would upload the digest twice and skew the write-up. Reads and
     deletes are safe, so those are the ones that ask for it.
     """
+    # A stalled call used to hang the run with no email at all. Measured over a month
+    # of runs, an ask took 18s typically and 106s at worst, and nothing else passed 32s
+    # — so these limits catch a hang without ever tripping on a slow morning.
+    limit = 240 if args[0] == "ask" else 120
     for attempt in range(retries + 1):
         log.info("cli: %s%s", " ".join(args),
                  f" (attempt {attempt + 1}/{retries + 1})" if attempt else "")
-        p = subprocess.run(["notebooklm", *args], capture_output=True, text=True)
+        try:
+            p = subprocess.run(["notebooklm", *args], capture_output=True, text=True,
+                               timeout=limit)
+        except subprocess.TimeoutExpired:
+            # subprocess.run has already killed it. Reported as text TRANSIENT matches,
+            # so the call is retried where that is safe and an unconfirmed create is
+            # reconciled rather than repeated.
+            p = subprocess.CompletedProcess(args, 124, "", f"timed out after {limit}s")
         if p.stdout.strip():
             log.debug("cli stdout: %s", p.stdout.strip()[:2000])
         if p.stderr.strip():
@@ -1183,30 +1195,62 @@ def check_rendered(html_body, plain_body, weather, picks, extras, quote, horosco
     return missing
 
 
-def send_mail(subject, body, html_body=None):
-    """Send the briefing, HTML with the plain text carried alongside it.
+def smtp_transient(ex):
+    """A send failure worth one more try: a 4xx, a dropped connection, a timeout.
 
-    Never raises: a mail failure is logged and the run still counts as a success,
-    because the episode and the page are already published by this point.
+    Not a 5xx, and in particular not 535, Gmail refusing the login: retrying a
+    revoked app password fixes nothing, and a refused message is refused again.
+    """
+    if isinstance(ex, smtplib.SMTPResponseException):    # includes the 535 refusal
+        return 400 <= ex.smtp_code < 500
+    if isinstance(ex, smtplib.SMTPServerDisconnected):
+        return True
+    if isinstance(ex, smtplib.SMTPException):            # recipients refused, and so on
+        return False
+    return isinstance(ex, OSError)                       # timeout, refused, DNS, TLS
+
+
+def send_mail(subject, body, html_body=None, retry_after=30):
+    """Send an email, HTML with the plain text carried alongside it. True if it went.
+
+    Never raises, because the failure path sends through here too, and an exception
+    there would skip the healthcheck ping — the one alarm that still works when Gmail
+    is what broke. It returns False instead, and main() fails the run on that. This
+    used to log the error and carry on, so a refused send ended in an "ok" ping, a
+    green check and no briefing.
+
+    With SMTP_PASSWORD unset, mail is switched off rather than broken, so that counts
+    as success: the README promises the run still works without it.
     """
     pw = os.environ.get("SMTP_PASSWORD")
     if not pw:
         log.warning("SMTP_PASSWORD unset, skipping email")
-        return
+        return True
     e = CFG["email"]
     m = EmailMessage()
     m["Subject"], m["From"], m["To"] = subject, e["from"], e["to"]
     m.set_content(body)
     if html_body:
         m.add_alternative(html_body, subtype="html")
-    try:
-        with smtplib.SMTP(e["smtp_host"], e["smtp_port"], timeout=30) as s:
-            s.starttls()
-            s.login(e["from"], pw.strip())
-            s.send_message(m)
-        log.info("email sent to %s", e["to"])
-    except Exception:
-        log.exception("email failed")
+    for attempt in (1, 2):
+        try:
+            with smtplib.SMTP(e["smtp_host"], e["smtp_port"], timeout=30) as s:
+                s.starttls()
+                s.login(e["from"], pw.strip())
+                s.send_message(m)
+            log.info("email sent to %s", e["to"])
+            return True
+        except Exception as ex:
+            code = getattr(ex, "smtp_code", None)
+            why = type(ex).__name__ + (f" {code}" if code else "")
+            if attempt == 1 and smtp_transient(ex):
+                log.warning("email failed (%s), retrying in %ds", why, retry_after)
+                time.sleep(retry_after)
+                continue
+            if isinstance(ex, smtplib.SMTPAuthenticationError):
+                why += " - Gmail refused the login; has the app password been revoked?"
+            log.exception("email NOT sent: %s", why)
+            return False
 
 
 def banner():
@@ -1313,8 +1357,9 @@ def main():
           quote. It is the slow step and the only one that can take ten minutes.
       5.  Sidecars are written, then read straight back with episodes() and the
           email is rendered from that, so what is sent matches what was archived.
-      6.  Only a finished episode is committed to the ledger, so a failed run
-          does not burn stories it never covered.
+      6.  Only a delivered briefing is committed to the ledger and the torrent
+          history, so neither a failed run nor a refused send burns stories or
+          picks nobody saw.
 
     Every optional part — weather, horoscope, picks, quote — degrades to an
     absent section rather than a failed run. The notes are the exception: without
@@ -1325,6 +1370,10 @@ def main():
     stamp = f"{datetime.now():%Y-%m-%d}"
     digest = OUT / "digest.md"
     started = datetime.now()
+    # feedparser takes no timeout, so a feed that stops answering would hang the run
+    # with no email at all. Every other fetch here passes its own limit; this is the
+    # default for the one that cannot.
+    socket.setdefaulttimeout(30)
     log.info("=== run start %s ===", stamp)
     banner()
     ledger, days = OUT / "aired.jsonl", CFG.get("ledger_days", 7)
@@ -1367,7 +1416,6 @@ def main():
             (OUT / f"{stamp}.horoscope").write_text(json.dumps(horoscope))
         if fresh_picks:
             (OUT / f"{stamp}.torrents").write_text(json.dumps(fresh_picks))
-        remember_torrents(picks, tledger, stamp, tdays)
         # Only spoken stories join the note-matching pool; a note can't have come
         # from a feed the hosts never read.
         (OUT / f"{stamp}.sources").write_text(json.dumps(
@@ -1387,8 +1435,6 @@ def main():
             r.pop("comments", None)
         if extra_rows:
             (OUT / f"{stamp}.extras").write_text(json.dumps(extra_rows))
-        # Only a finished episode counts as aired, so a failed run doesn't burn stories.
-        commit_aired(ledger, items, stamp, days)
         prune()
         prune_sent()
         # The email renders from what was just written to disk rather than from the
@@ -1403,7 +1449,13 @@ def main():
                        horoscope)
         # Filed before sending, so a briefing that Gmail refuses still exists somewhere.
         archive_sent(html_body, today["title"], stamp)
-        send_mail(today["title"], plain_body, html_body)
+        if not send_mail(today["title"], plain_body, html_body):
+            raise RuntimeError("the briefing email was not sent; the reason is logged above")
+        # Only a delivered briefing counts. These were recorded before the send, so a
+        # briefing Gmail refused still blocked its stories for ledger_days and marked its
+        # picks as seen, though nobody ever saw either.
+        commit_aired(ledger, items, stamp, days)
+        remember_torrents(picks, tledger, stamp, tdays)
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
         # made it in, so a silently absent section is visible without digging.

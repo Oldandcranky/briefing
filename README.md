@@ -36,7 +36,10 @@ Each run:
    freely, so a note may say "Supreme Court" where the headline said "SCOTUS". A
    match needs three shared words, a fifth of the note's own vocabulary, and a
    clear lead over the runner-up — no link beats a confidently wrong one. Nothing links back to a server: the email is the whole product.
-   Or the error, if the run failed.
+   Or the error, if the run failed. A send that still fails after one retry
+   fails the run, so the healthcheck alerts you even when email is what broke.
+   NotebookLM calls are time-limited, so a hang ends in a failure too rather
+   than in silence.
 
 NotebookLM's backend fails transiently more often than you would like — a timed-out
 `GET_NOTEBOOK` is Google's RPC layer having a moment, not a problem with the notebook.
@@ -193,7 +196,8 @@ Two mechanisms, deliberately different in kind. Yesterday's digest is attached
 to the notebook as a second source, which *asks* the write-up to lead with what
 changed — a soft nudge, and an LLM given a fresh context each morning will
 cheerfully re-run yesterday's headline anyway. So `aired.jsonl` in the output
-dir is the hard gate: every story that made it into a briefing is recorded, and
+dir is the hard gate: every story in a briefing that was actually sent is
+recorded, and
 for `ledger_days` afterwards it can't come back.
 
 Identity is the article's canonical URL — query strings and `www.` stripped —

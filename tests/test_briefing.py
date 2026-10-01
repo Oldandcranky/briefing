@@ -52,6 +52,7 @@ import briefing as b  # noqa: E402
 # Sections below stub b.run freely; keep the real one to restore when a test
 # needs to exercise run() itself rather than one of its callers.
 REAL_RUN = b.run
+REAL_SEND = b.send_mail
 
 def mk_ep(title="T", notes="- A note.", weather=None, torrents=None, quote="",
           extras=None, horoscope=None):
@@ -1399,6 +1400,117 @@ check("main files the email before sending it",
       "archive_sent(html_body" in _main_src
       and _main_src.index("archive_sent(html_body") < _main_src.index("send_mail(today"))
 check("main prunes the archive", "prune_sent()" in _main_src)
+
+
+# ------------------------------------------- a send that fails is a failed run
+section("a send that fails is a failed run")
+
+import smtplib as _smtp  # noqa: E402
+
+
+class FakeSMTP:
+    """One scripted outcome per connection: None sends, an exception is raised."""
+    script, attempts = [], 0
+
+    def __init__(self, host, port, timeout=None):
+        FakeSMTP.attempts += 1
+        self.outcome = FakeSMTP.script[min(FakeSMTP.attempts - 1, len(FakeSMTP.script) - 1)]
+
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def starttls(self): pass
+    def login(self, user, pw): pass
+
+    def send_message(self, m):
+        if self.outcome is not None:
+            raise self.outcome
+
+
+def send_with(*script):
+    FakeSMTP.script, FakeSMTP.attempts = list(script), 0
+    return b.send_mail("Subject", "body", "<p>html</p>", retry_after=0), FakeSMTP.attempts
+
+
+real_SMTP, real_pw = b.smtplib.SMTP, os.environ.get("SMTP_PASSWORD")
+b.smtplib.SMTP, b.send_mail = FakeSMTP, REAL_SEND
+os.environ["SMTP_PASSWORD"] = "test-app-password"
+
+ok, n = send_with(None)
+check("a send that works says so", ok is True and n == 1, (ok, n))
+ok, n = send_with(_smtp.SMTPServerDisconnected("dropped"), None)
+check("a dropped connection is retried once, and the retry counts",
+      ok is True and n == 2, (ok, n))
+ok, n = send_with(_smtp.SMTPResponseException(421, b"4.7.0 Try again later"), None)
+check("a 4xx try-again-later is retried", ok is True and n == 2, (ok, n))
+ok, n = send_with(_smtp.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted"))
+check("a refused login is not retried - a revoked app password stays revoked",
+      ok is False and n == 1, (ok, n))
+ok, n = send_with(_smtp.SMTPDataError(552, b"5.3.4 Message size exceeds fixed limit"))
+check("a refused message is not retried", ok is False and n == 1, (ok, n))
+ok, n = send_with(TimeoutError("timed out"))
+check("a timeout that persists gives up after one retry", ok is False and n == 2, (ok, n))
+check("it never raises, so the failure path still reaches the healthcheck",
+      send_with(RuntimeError("something odd"))[0] is False)
+os.environ.pop("SMTP_PASSWORD")
+FakeSMTP.attempts = 0
+check("with mail switched off it reports success and never connects",
+      b.send_mail("S", "b", retry_after=0) is True and FakeSMTP.attempts == 0)
+b.smtplib.SMTP = real_SMTP
+if real_pw is not None:
+    os.environ["SMTP_PASSWORD"] = real_pw
+
+# Wiring, read rather than run, as the rest of main() is guarded.
+_main_src = __import__("inspect").getsource(b.main)
+_sent_at = _main_src.index("send_mail(today")
+check("main fails the run when the briefing does not go out",
+      "if not send_mail(today" in _main_src)
+check("the ledger is recorded only after a successful send",
+      _main_src.count("commit_aired(") == 1 and _main_src.index("commit_aired(") > _sent_at)
+check("and so is the torrent history",
+      _main_src.count("remember_torrents(") == 1
+      and _main_src.index("remember_torrents(") > _sent_at)
+check("feed fetches get a time limit", "socket.setdefaulttimeout(" in _main_src)
+
+
+# ---------------------------------- a hung NotebookLM call becomes a failure
+section("a hung NotebookLM call becomes a failure, not silence")
+
+b.run = REAL_RUN
+limits = []
+
+
+def hang(argv, **kw):
+    limits.append(kw.get("timeout"))
+    raise b.subprocess.TimeoutExpired(argv, kw.get("timeout"))
+
+
+real_sp = b.subprocess.run
+b.subprocess.run = hang
+try:
+    b.run("ask", "question", "-n", "nb", retries=1, backoff=0)
+    hung = ""
+except RuntimeError as ex:
+    hung = str(ex)
+check("a stalled ask is retried, then fails with its reason",
+      limits == [240, 240] and "timed out after 240s" in hung, (limits, hung[:90]))
+check("and that reason reads as transient", bool(b.TRANSIENT.search(hung)))
+limits.clear()
+try:
+    b.run("source", "add", "digest.md", "-n", "nb")
+except RuntimeError:
+    pass
+check("everything else gets the shorter limit, and no retry unless asked",
+      limits == [120], limits)
+b.subprocess.run = real_sp
+
+fake, made = create_cli(
+    [RuntimeError("notebooklm create briefing-2026-09-30 --json exited 124: "
+                  "timed out after 120s"), MADE], LANDED)
+b.run = fake
+check("a create that timed out is reconciled, not repeated blind",
+      b.create_notebook("2026-09-30", backoff=0) == "landed"
+      and made.count("create") == 1, made)
+b.run = REAL_RUN
 
 if LIVE:
     section("live feeds (network)")
