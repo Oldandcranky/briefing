@@ -18,7 +18,10 @@ services:
     volumes:
       # Adjust to wherever this repo and the output dir live on your host.
       - /volume1/docker/briefing/auth:/root/.notebooklm
-      - /volume1/web/briefing:/data
+      # Not under a web server's document root: on Synology /volume1/web is Web
+      # Station's, and it served the log, config and every archived email to the LAN.
+      # A sibling of the repo dir rather than inside it, which is the build context.
+      - /volume1/docker/briefing-data:/data
       # Bind-mount the script over the baked-in copy so edits don't need a rebuild.
       - /volume1/docker/briefing/briefing.py:/app/briefing.py
     logging:

@@ -61,8 +61,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[logging.StreamHandler(sys.stdout),
-              # Bounded: a daily DEBUG log otherwise grows without limit, and this
-              # one sits in a web-served directory.
+              # Bounded: a daily DEBUG log otherwise grows without limit.
               logging.handlers.RotatingFileHandler(
                   LOG_FILE, maxBytes=2_000_000, backupCount=5)])
 log = logging.getLogger("briefing")
@@ -1293,7 +1292,8 @@ def ping_healthcheck(ok):
         urllib.request.urlopen(url if ok else url.rstrip("/") + "/fail", timeout=10)
         log.info("healthcheck pinged (%s)", "ok" if ok else "fail")
     except Exception as ex:
-        # No traceback: it would print the ping URL, and this log is web-served.
+        # No traceback: it would print the ping URL, and whoever holds that URL can
+        # mark the check up or down.
         log.warning("healthcheck ping failed: %s", type(ex).__name__)
 
 

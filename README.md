@@ -116,10 +116,16 @@ The compose file mounts two host paths — adjust them to your layout:
   `.horoscope` sidecars), `digest.md`, `digest-yesterday.md`, `aired.jsonl`,
   `torrents-seen.jsonl`, `briefing.log`
 
-The output dir needs no web server. `sent/` is the record: one
-`YYYY-MM-DD_HHMM.html` per email, kept for `archive_days` (default a year) and
-filed *before* sending, so a briefing Gmail refuses is still on disk. Open one
-from a file share in any browser.
+The output dir needs no web server, and must not sit under one. It holds the
+log, the config with your email addresses, and every email sent. On Synology,
+`/volume1/web` is Web Station's document root: this project's output lived there
+until 2026-10-01, and all of it was readable by anything on the LAN, long after
+the page itself was removed. Keep it beside the repo dir rather than inside it,
+since the repo dir is the image's build context.
+
+`sent/` is the record: one `YYYY-MM-DD_HHMM.html` per email, kept for
+`archive_days` (default a year) and filed *before* sending, so a briefing Gmail
+refuses is still on disk. Open one from the file share in any browser.
 
 It is kept apart from the sidecars on purpose. Re-rendering from those does not
 reproduce what went out: the renderer and the source matcher change over time,
