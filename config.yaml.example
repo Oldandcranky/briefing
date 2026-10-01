@@ -7,7 +7,8 @@ feeds:
   BBC World: https://feeds.bbci.co.uk/news/world/rss.xml
 
 max_per_feed: 8
-keep_episodes: 14      # older briefings are deleted
+keep_episodes: 14      # older briefings' working files are deleted
+archive_days: 365      # every email as sent is kept in sent/ this long (0 = forever)
 
 # Feeds regenerated daily carry no per-entry dates — a "trending today" listing is
 # today's by construction. Name those here and the freshness window takes them at

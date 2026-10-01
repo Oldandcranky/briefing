@@ -110,13 +110,21 @@ The compose file mounts two host paths — adjust them to your layout:
 
 - the repo/deploy dir (auth + `briefing.py`, which is bind-mounted over the
   baked-in copy so script edits don't need a rebuild)
-- the output dir → `/data`: `config.yaml`, the archive of past briefings
-  (`.txt` notes plus `.title`, `.sources`, `.weather`, `.torrents`, `.quote`,
-  `.extras` and `.horoscope` sidecars), `digest.md`, `digest-yesterday.md`,
-  `aired.jsonl`, `torrents-seen.jsonl`, `briefing.log`
+- the output dir → `/data`: `config.yaml`, `sent/` (every email exactly as it
+  went out), the working files each briefing is built from (`.txt` notes plus
+  `.title`, `.sources`, `.weather`, `.torrents`, `.quote`, `.extras` and
+  `.horoscope` sidecars), `digest.md`, `digest-yesterday.md`, `aired.jsonl`,
+  `torrents-seen.jsonl`, `briefing.log`
 
-The output dir needs no web server. It is an archive: the email is delivered, and
-the files are the record of what was sent.
+The output dir needs no web server. `sent/` is the record: one
+`YYYY-MM-DD_HHMM.html` per email, kept for `archive_days` (default a year) and
+filed *before* sending, so a briefing Gmail refuses is still on disk. Open one
+from a file share in any browser.
+
+It is kept apart from the sidecars on purpose. Re-rendering from those does not
+reproduce what went out: the renderer and the source matcher change over time,
+and a second run on the same day overwrites them. Only the stored copy is
+faithful.
 
 ## Deploying
 

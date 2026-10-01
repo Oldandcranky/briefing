@@ -1341,6 +1341,65 @@ sm = b.email_html(next(e for e in b.episodes() if e["stem"] == "2026-08-26"))
 check("a summary-only match still renders its arrow",
       'href="https://npr.example/upfirst"' in sm and "&#8599;" in sm)
 
+
+# ------------------------------------------------- the sent-email archive
+section("archive of every email as sent")
+
+BODY = ('<!doctype html><html><body style="margin:0">Fed cuts rates &#8599; 66&deg; '
+        '\u2650 Sagittarius</body></html>')
+shutil.rmtree(b.SENT, ignore_errors=True)
+first = b.archive_sent(BODY, "Sep 30 '26 \u00b7 Fed & <Friends>", "2026-09-30",
+                       when=datetime(2026, 9, 30, 8, 24))
+check("filed under sent/, named by date and minute",
+      first is not None and first.name == "2026-09-30_0824.html" and first.parent == b.SENT,
+      first and first.name)
+page = first.read_text(encoding="utf-8")
+check("the body is exactly what was sent",
+      '<body style="margin:0">Fed cuts rates &#8599; 66&deg; \u2650 Sagittarius</body>' in page)
+check("it declares utf-8, so it opens as a file without mojibake",
+      '<meta charset="utf-8">' in page and page.index("charset") < page.index("<body"))
+check("the subject becomes the tab title, escaped",
+      "<title>Sep 30 &#x27;26 \u00b7 Fed &amp; &lt;Friends&gt;</title>" in page)
+
+second = b.archive_sent(BODY.replace("Fed cuts", "Second run"), "T", "2026-09-30",
+                        when=datetime(2026, 9, 30, 9, 48))
+check("a second send the same day gets its own file",
+      second.name == "2026-09-30_0948.html")
+check("and the morning's copy survives it — the thing the sidecars cannot do",
+      "Fed cuts rates" in first.read_text(encoding="utf-8"))
+
+today_s = datetime.now().strftime("%Y-%m-%d")
+for name in ("2020-01-01_0545.html", f"{today_s}_0545.html", "notes.html"):
+    (b.SENT / name).write_text("x")
+b.CFG["archive_days"] = 365
+b.prune_sent()
+left = sorted(f.name for f in b.SENT.glob("*.html"))
+check("emails past archive_days are pruned", "2020-01-01_0545.html" not in left, left)
+check("recent ones are kept", f"{today_s}_0545.html" in left, left)
+check("a file that isn't dated is left alone", "notes.html" in left, left)
+(b.SENT / "2020-01-01_0545.html").write_text("x")
+b.CFG["archive_days"] = 0
+b.prune_sent()
+check("archive_days: 0 keeps everything",
+      (b.SENT / "2020-01-01_0545.html").exists())
+b.CFG.pop("archive_days", None)
+
+# Not being able to file a copy must never stop the email.
+shutil.rmtree(b.SENT, ignore_errors=True)
+b.SENT.write_text("a file where the folder should be")
+check("an unwritable archive is survivable, not fatal",
+      b.archive_sent(BODY, "T", "2026-09-30") is None)
+b.SENT.unlink()
+
+# The suite never runs main() end to end, so guard the wiring the way the full-text
+# ordering is guarded: by reading it. Filing after the send would lose exactly the
+# briefings the archive most needs — the ones Gmail refused.
+_main_src = __import__("inspect").getsource(b.main)
+check("main files the email before sending it",
+      "archive_sent(html_body" in _main_src
+      and _main_src.index("archive_sent(html_body") < _main_src.index("send_mail(today"))
+check("main prunes the archive", "prune_sent()" in _main_src)
+
 if LIVE:
     section("live feeds (network)")
     b.feedparser.parse = REAL_PARSE

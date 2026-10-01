@@ -32,6 +32,7 @@ except ImportError:
     trafilatura = None
 
 OUT = Path(os.environ.get("BRIEFING_OUT", "/data"))
+SENT = OUT / "sent"   # every email as it went out; see archive_sent()
 CFG_PATH = Path(os.environ.get("BRIEFING_CONFIG", "/data/config.yaml"))
 CFG = yaml.safe_load(CFG_PATH.read_text())
 UA = "Mozilla/5.0 (compatible; briefing/1.0)"
@@ -776,6 +777,55 @@ def prune():
         log.info("pruned %s", f.stem)
 
 
+def archive_sent(html_body, title, stamp, when=None):
+    """Keep the email exactly as sent, one file per send, in sent/. Returns the path.
+
+    Re-rendering from the sidecars does not reproduce what went out, because the
+    renderer and the source matcher move on: on 2026-09-30 a re-render of that
+    morning's briefing showed six source arrows where the email itself had five. So
+    this copy is the only faithful record. Every send gets its own file stamped to
+    the minute, because a second run on the same day overwrites that day's sidecars —
+    which is how that same morning's briefing went missing from the archive.
+
+    The body is what was sent, byte for byte. A head is added with a charset and the
+    subject: a mail client takes the encoding from the MIME headers, but a file opened
+    in a browser has nothing else to go on, and ↗, ° and ♐ come out as mojibake.
+
+    Never fatal. The email is the product; failing to file a copy of it must not stop
+    it going out.
+    """
+    when = when or datetime.now()
+    head = ('<head><meta charset="utf-8"><meta name="viewport" '
+            'content="width=device-width, initial-scale=1">'
+            f"<title>{html.escape(title)}</title></head>")
+    path = SENT / f"{stamp}_{when:%H%M}.html"
+    try:
+        SENT.mkdir(exist_ok=True)
+        path.write_text(html_body.replace("<html>", "<html>" + head, 1), encoding="utf-8")
+    except OSError:
+        log.warning("could not archive the email to %s", path, exc_info=True)
+        return None
+    log.info("archived the email as sent/%s", path.name)
+    return path
+
+
+def prune_sent():
+    """Drop archived emails older than archive_days; 0 keeps them for good.
+
+    Dated by the filename rather than the mtime, which a copy or a restore resets.
+    Kept far longer than the working sidecars by default: a year of these is a few
+    megabytes, and an archive that forgets after a fortnight isn't one.
+    """
+    days = int(CFG.get("archive_days", 365))
+    if not days or not SENT.is_dir():
+        return
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    for f in sorted(SENT.glob("*.html")):
+        if STAMP.match(f.name[:10]) and f.name[:10] < cutoff:
+            f.unlink()
+            log.info("pruned sent/%s", f.name)
+
+
 def episodes():
     """Newest first, capped at keep_episodes — the one shape both surfaces render from.
 
@@ -1340,6 +1390,7 @@ def main():
         # Only a finished episode counts as aired, so a failed run doesn't burn stories.
         commit_aired(ledger, items, stamp, days)
         prune()
+        prune_sent()
         # The email renders from what was just written to disk rather than from the
         # variables above, so a sidecar that failed to write shows up as a missing
         # section here instead of silently differing from the archive.
@@ -1350,6 +1401,8 @@ def main():
         html_body, plain_body = email_html(today), email_plain(today)
         check_rendered(html_body, plain_body, weather, fresh_picks, extra_rows, quote,
                        horoscope)
+        # Filed before sending, so a briefing that Gmail refuses still exists somewhere.
+        archive_sent(html_body, today["title"], stamp)
         send_mail(today["title"], plain_body, html_body)
         mins = (datetime.now() - started).total_seconds() / 60
         # One line describing the whole run: every optional part says whether it
