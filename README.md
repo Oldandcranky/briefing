@@ -36,6 +36,8 @@ Each run:
    freely, so a note may say "Supreme Court" where the headline said "SCOTUS". A
    match needs three shared words, a fifth of the note's own vocabulary, and a
    clear lead over the runner-up — no link beats a confidently wrong one. Nothing links back to a server: the email is the whole product.
+   It follows the phone's light or dark setting: the light design is inline, and
+   a small stylesheet swaps in a dark palette, which iPhone Mail honours.
    Or the error, if the run failed. A send that still fails after one retry
    fails the run, so the healthcheck alerts you even when email is what broke.
    NotebookLM calls are time-limited, so a hang ends in a failure too rather

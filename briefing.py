@@ -806,13 +806,17 @@ def archive_sent(html_body, title, stamp, when=None):
     it going out.
     """
     when = when or datetime.now()
-    head = ('<head><meta charset="utf-8"><meta name="viewport" '
+    meta = ('<meta charset="utf-8"><meta name="viewport" '
             'content="width=device-width, initial-scale=1">'
-            f"<title>{html.escape(title)}</title></head>")
+            f"<title>{html.escape(title)}</title>")
+    # Into the email's own head when it has one, first, so the charset lands in the
+    # first bytes where browsers look for it; otherwise a head of our own.
+    page = (html_body.replace("<head>", "<head>" + meta, 1) if "<head>" in html_body
+            else html_body.replace("<html>", f"<html><head>{meta}</head>", 1))
     path = SENT / f"{stamp}_{when:%H%M}.html"
     try:
         SENT.mkdir(exist_ok=True)
-        path.write_text(html_body.replace("<html>", "<html>" + head, 1), encoding="utf-8")
+        path.write_text(page, encoding="utf-8")
     except OSError:
         log.warning("could not archive the email to %s", path, exc_info=True)
         return None
@@ -994,12 +998,45 @@ def note_links(notes, sources):
     return pairs, matched
 
 
+# The email's colours by role, light and dark. The light palette is written inline,
+# because inline styles are the one thing every mail client honours; dark_css() swaps
+# in the dark palette when the phone is in dark mode. Dark-mode contrast against the
+# card: ink 14.1:1, dim 6.5:1, accent 7.6:1 — all well past the 4.5:1 small-text bar.
+LIGHT = {"ink": "#1c1b19", "dim": "#6b6862", "line": "#e6e2db",
+         "accent": "#8a5a2b", "card": "#ffffff", "page": "#f4f2ee"}
+DARK = {"ink": "#ece8e1", "dim": "#a39e96", "line": "#3a3733",
+        "accent": "#d4a373", "card": "#1c1b19", "page": "#121110"}
+
+
+def dark_css():
+    """The dark-mode stylesheet, generated from the two palettes.
+
+    Every colour in the email is an inline style, and an inline style beats a
+    stylesheet unless the stylesheet says !important. Rather than tag each element
+    with a class, this matches the inline declaration itself — [style*="color:#1c1b19"]
+    is every element whose text is ink — so the palettes above stay the only source.
+    The suite checks that every colour the email renders has a rule here, so a style
+    written some other way cannot slip through and stay white at 6am.
+
+    iPhone Mail honours this. A client that drops <style> just shows the light design.
+    """
+    rules = [f'[style*="background:{LIGHT[r]}"]{{background:{DARK[r]}!important}}'
+             for r in ("page", "card")]
+    rules += [f'[style*="color:{LIGHT[r]}"]{{color:{DARK[r]}!important}}'
+              for r in ("ink", "dim", "accent")]
+    rules += [f'[style*="solid {LIGHT[r]}"]{{border-color:{DARK[r]}!important}}'
+              for r in ("line", "accent")]
+    return ":root{color-scheme:light dark}@media (prefers-color-scheme:dark){%s}" % "".join(rules)
+
+
 def email_html(ep):
     """The briefing email, rendered from the episode read back off disk.
 
-    Inline styles and tables only: mail clients ignore stylesheets and several strip
-    <style> outright. No images, so nothing is blocked or tracked, and no links back
-    to a server — the email is the whole product.
+    Inline styles and tables for everything that has to render: several clients strip
+    <style> outright. The one stylesheet is dark mode, which only ever overrides
+    colours, so a client that drops it still gets the whole briefing in light. No
+    images, so nothing is blocked or tracked, and no links back to a server — the
+    email is the whole product.
     """
     title, points = ep["title"], ep.get("notes") or ""
     weather, picks = ep.get("weather"), ep.get("torrents") or []
@@ -1007,8 +1044,8 @@ def email_html(ep):
     horoscope = ep.get("horoscope")
     meta = f"{ep['local']:%A, %B} {ep['local'].day}"
     esc = html.escape
-    ink, dim, line = "#1c1b19", "#6b6862", "#e6e2db"
-    accent, card, page = "#8a5a2b", "#ffffff", "#f4f2ee"
+    ink, dim, line = LIGHT["ink"], LIGHT["dim"], LIGHT["line"]
+    accent, card, page = LIGHT["accent"], LIGHT["card"], LIGHT["page"]
 
     wx = ""
     if weather:
@@ -1123,7 +1160,13 @@ def email_html(ep):
                       f'padding:0 0 12px">Not in the summary</div>'
                       f'{"".join(chunks)}</div>')
 
-    return (f'<!doctype html><html><body style="margin:0;padding:0;background:{page}">'
+    return (f'<!doctype html><html><head>'
+            # Without these Apple Mail treats the email as light-only and leaves it a
+            # bright panel in dark mode, whatever the stylesheet says.
+            f'<meta name="color-scheme" content="light dark">'
+            f'<meta name="supported-color-schemes" content="light dark">'
+            f'<style>{dark_css()}</style></head>'
+            f'<body style="margin:0;padding:0;background:{page}">'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
             f'style="background:{page};padding:22px 12px">'
             f'<tr><td align="center">'

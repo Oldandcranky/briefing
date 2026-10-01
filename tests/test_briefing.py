@@ -535,7 +535,12 @@ check("new picks section present", "Some Release-TEAM" in mail and "616 seeders"
 check("picks link to the tracker", 'href="https://tracker.example/t/1"' in mail)
 check("no external images or scripts",
       "<img" not in mail and "<script" not in mail and "http://" not in mail)
-check("styles are inline, not a stylesheet", "<style" not in mail and "class=" not in mail)
+_head, _, _body = mail.partition("</head>")
+check("everything visible is styled inline, so a client that strips <style> still works",
+      "<style" not in _body and "class=" not in mail)
+check("the only stylesheet is dark mode, and it only overrides",
+      _head.count("<style>") == 1 and "@media (prefers-color-scheme:dark)" in _head
+      and "!important" in _head)
 nasty_title = '<script>alert(1)</script> & "quotes"'
 m2 = b.email_html(mk_ep(title=nasty_title, notes="- <b>bold</b> attempt", weather=wx))
 check("subject line content escaped", "<script>" not in m2 and "&lt;script&gt;" in m2)
@@ -1511,6 +1516,78 @@ check("a create that timed out is reconciled, not repeated blind",
       b.create_notebook("2026-09-30", backoff=0) == "landed"
       and made.count("create") == 1, made)
 b.run = REAL_RUN
+
+
+# ------------------------------------------------------------------- dark mode
+section("dark mode")
+
+DM_SRC = [{"title": "Fed cuts interest rates amid cooling inflation", "feed": "NPR",
+           "feeds": ["NPR"], "link": "https://npr.example/fed", "summary": ""}]
+dm_ep = mk_ep(
+    title="Oct 1 '26 \u00b7 Fed Cuts Rates",
+    notes="- Fed cuts interest rates sharply amid cooling inflation data.",
+    weather={"label": "Huntley, IL 60142", "periods": [
+        {"name": n, "temp": t, "unit": "F", "day": d, "wind": "5 mph", "short": "Showers",
+         "precip": pr, "detail": "d"}
+        for n, t, d, pr in (("Today", 68, True, 100), ("Tonight", 64, False, 80),
+                            ("Thursday", 69, True, 60), ("Thursday Night", 52, False, 20))]},
+    torrents=[{"id": "1", "path": "/t/1", "title": "A Release-TEAM", "age": "1 hour ago",
+               "seeders": 5, "leechers": 1}],
+    quote="A dry little line.",
+    horoscope={"sign": "Sagittarius", "glyph": "\u2650", "text": "Rest today."},
+    extras=[{"title": "owner/repo", "feed": "GitHub Trending", "link": "https://gh.example/1",
+             "about": "Does a specific useful thing."}])
+dm_ep["sources"] = DM_SRC
+dm = b.email_html(dm_ep)
+dm_head, _, dm_body = dm.partition("</head>")
+css = b.dark_css()
+
+check("it tells Apple Mail it supports both schemes",
+      '<meta name="color-scheme" content="light dark">' in dm_head
+      and '<meta name="supported-color-schemes" content="light dark">' in dm_head)
+check("the source arrow rendered, so its colour is covered below", "&#8599;" in dm_body)
+
+# Every colour the body uses must have a dark rule for the exact way it is written,
+# or that element stays light on a dark screen. This is what keeps the attribute
+# selectors honest when someone adds a style later.
+uncovered = []
+for hexc in b.LIGHT.values():
+    for m in re.finditer(re.escape(hexc), dm_body):
+        before = dm_body[max(0, m.start() - 12):m.start()]
+        form = next((f for f in ("background:", "color:", "solid ") if before.endswith(f)), None)
+        if not form or f'[style*="{form}{hexc}"]' not in css:
+            uncovered.append(before[-12:] + hexc)
+check("every colour in the email has a dark-mode rule", not uncovered, uncovered[:5])
+stray = sorted(set(re.findall(r"(?<!&)#[0-9a-fA-F]{6}\b", dm_body)) - set(b.LIGHT.values()))
+check("no colour is used outside the palette", not stray, stray)
+check("the light design is still inline for clients that ignore the stylesheet",
+      "background:#ffffff" in dm_body and "color:#1c1b19" in dm_body)
+
+
+def _lum(h):
+    c = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+def _contrast(a, b2):
+    hi, lo = sorted((_lum(a), _lum(b2)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+low = {r: round(_contrast(b.DARK[r], b.DARK["card"]), 1) for r in ("ink", "dim", "accent")}
+check("dark text stays readable: 4.5:1 or better against the card",
+      all(v >= 4.5 for v in low.values()), low)
+check("the card stands out from the page in dark too", b.DARK["card"] != b.DARK["page"])
+
+arch_dir = b.SENT
+shutil.rmtree(arch_dir, ignore_errors=True)
+filed = b.archive_sent(dm, "Oct 1 '26", "2026-10-01", when=datetime(2026, 10, 1, 5, 46)).read_text(encoding="utf-8")
+check("the archived copy has one head, not two", filed.count("<head>") == 1, filed.count("<head>"))
+check("with the charset first inside it, and dark mode kept",
+      filed.index('<meta charset="utf-8">') < filed.index("color-scheme")
+      and "prefers-color-scheme:dark" in filed)
+shutil.rmtree(arch_dir, ignore_errors=True)
 
 if LIVE:
     section("live feeds (network)")
